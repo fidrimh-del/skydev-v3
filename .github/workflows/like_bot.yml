@@ -1,0 +1,60 @@
+name: SKYDEV Post Engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Operasi: GET (Ambil Data) atau LIKE (Eksekusi)'
+        required: true
+        default: 'GET'
+      target_data:
+        description: 'UUID User (GET) atau Kumpulan Post ID (LIKE)'
+        required: true
+      jumlah_bot:
+        description: 'Jumlah Bot (Hanya dipakai untuk mode LIKE)'
+        required: false
+        default: '50'
+
+jobs:
+  operasi_postingan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Ambil Kode Repo
+        uses: actions/checkout@v4
+        
+      - name: Siapkan Mesin Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install Senjata (Dependencies)
+        # Tambahkan library supabase di sini
+        run: pip install curl_cffi==0.16.0 requests==2.34.2 aiofiles==25.1.0 supabase==2.31.0 typing_extensions==4.16.0
+        
+      - name: Tembak Server PK XD
+        # Suntikkan URL dan Key dari Github Secrets ke dalam mesin Python
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python like_cloud.py ${{ github.event.inputs.mode }} "${{ github.event.inputs.target_data }}" ${{ github.event.inputs.jumlah_bot }}
+        
+      - name: Simpan Hasil Kerja ke GitHub
+        run: |
+          git config --global user.name "SKYDEV Automasi"
+          git config --global user.email "bot@skydev.id"
+          
+          # Hapus latest_posts.json dari tracking Git karena datanya sekarang lari ke Supabase
+          git add BOT/Akun_Baru/ActiveSessions.txt || true
+          git add BOT/History_Like/ || true
+          
+          git commit -m "Auto-Save: Update Sesi Aktif / History Like" || echo "Tidak ada perubahan data"
+          git push
+
+      - name: Sapu Bersih Log Server
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run list --status completed --limit 15 --json databaseId -q '.[].databaseId' | xargs -I{} gh run delete {} || true

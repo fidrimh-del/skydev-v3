@@ -1,0 +1,83 @@
+name: SKYDEV MAX Engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      jumlah_per_server:
+        description: 'Berapa akun per server?'
+        required: true
+        default: '10'
+
+jobs:
+  # TAHAP 1: 20 PASUKAN BEKERJA BERSAMAAN
+  pabrik_akun_max:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # INI KUNCINYA: 20 Mesin menyala bersamaan!
+        pasukan: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - name: Ambil Kode
+        uses: actions/checkout@v4
+        
+      - name: Siapkan Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install Dependencies
+        # PERUBAHAN DI SINI: Menambahkan aiofiles
+        run: pip install curl_cffi==0.16.0 requests==2.34.2 aiofiles==25.1.0 typing_extensions==4.16.0
+        
+      - name: Eksekusi
+        run: python register_test.py ${{ github.event.inputs.jumlah_per_server }}
+        
+      - name: Setor Hasil Sementara
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hasil-Pasukan-${{ matrix.pasukan }}
+          path: |
+            List.txt
+            ActiveSessions.txt
+
+  # TAHAP 2: 1 KOMANDAN MENGGABUNGKAN (Menunggu 20 mesin selesai)
+  simpan_ke_repo_max:
+    needs: pabrik_akun_max
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Ambil Kode Repo
+        uses: actions/checkout@v4
+
+      - name: Tarik Semua Hasil Sementara
+        uses: actions/download-artifact@v4
+        with:
+          path: brankas_sementara
+
+      - name: Gabungkan File
+        run: |
+          mkdir -p BOT/Akun_Baru
+          cat brankas_sementara/Hasil-Pasukan-*/List.txt >> BOT/Akun_Baru/List.txt 2>/dev/null || true
+          cat brankas_sementara/Hasil-Pasukan-*/ActiveSessions.txt >> BOT/Akun_Baru/ActiveSessions.txt 2>/dev/null || true
+
+      - name: Push Permanen
+        run: |
+          git config --global user.name "SKYDEV Automasi"
+          git config --global user.email "bot@skydev.id"
+          git add BOT/Akun_Baru/
+          git commit -m "Auto-Save: SKYDEV-MAX memproduksi akun massal (V2)" || echo "Tidak ada akun baru"
+          git push
+
+  # TAHAP 3: TUKANG SAPU
+  bersih_history_max:
+    needs: simpan_ke_repo_max
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Hapus Log Lama
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run list --status completed --limit 50 --json databaseId -q '.[].databaseId' | xargs -I{} gh run delete {} || true

@@ -1,0 +1,53 @@
+name: SKYDEV Follow Engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_uuid:
+        description: 'UUID Target'
+        required: true
+      jumlah_order:
+        description: 'Jumlah Follower'
+        required: true
+        default: '100'
+
+jobs:
+  suntik_follow:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write 
+      actions: write  
+    steps:
+      - name: Ambil Kode
+        uses: actions/checkout@v4
+        
+      - name: Siapkan Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install Dependencies
+        # WAJIB menambahkan aiofiles untuk mendukung engine V2
+        run: pip install curl_cffi==0.16.0 requests==2.34.2 aiofiles==25.1.0 typing_extensions==4.16.0
+        
+      - name: Eksekusi Follow Pintar
+        run: python follow_cloud.py ${{ github.event.inputs.target_uuid }} ${{ github.event.inputs.jumlah_order }}
+        
+      - name: Simpan Data ke GitHub
+        run: |
+          git config --global user.name "SKYDEV Automasi"
+          git config --global user.email "bot@skydev.id"
+          
+          # Amankan berkas history pengerjaan target
+          git add BOT/History/
+          # Amankan sesi aktif baru jika ada bot yang auto-relogin di background
+          git add BOT/Akun_Baru/ActiveSessions.txt
+          
+          git commit -m "Auto-Save: History & Sesi Aktif [Target: ${{ github.event.inputs.target_uuid }}]" || echo "Tidak ada data baru"
+          git push
+
+      - name: Tukang Sapu (Hapus Log Lama)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run list --status completed --limit 50 --json databaseId -q '.[].databaseId' | xargs -I{} gh run delete {} || true

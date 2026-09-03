@@ -1,0 +1,40 @@
+name: SKYDEV Relogin Engine
+
+on:
+  workflow_dispatch:
+
+jobs:
+  refresh_sesi:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Ambil Kode Repo
+        uses: actions/checkout@v4
+        
+      - name: Siapkan Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install Dependencies
+        # PERUBAHAN: Ditambahkan aiofiles demi mendukung sistem Async V2
+        run: pip install curl_cffi==0.16.0 requests==2.34.2 aiofiles==25.1.0 typing_extensions==4.16.0
+        
+      - name: Eksekusi Relogin Massal
+        run: python relogin_cloud.py
+        
+      - name: Simpan Sesi Baru ke GitHub
+        run: |
+          git config --global user.name "SKYDEV Automasi"
+          git config --global user.email "bot@skydev.id"
+          git add BOT/Akun_Baru/ActiveSessions.txt
+          git commit -m "Auto-Save: Refresh Active Sessions (V2 Async)" || echo "Tidak ada perubahan"
+          git push
+
+      - name: Tukang Sapu Log
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run list --status completed --limit 50 --json databaseId -q '.[].databaseId' | xargs -I{} gh run delete {} || true
