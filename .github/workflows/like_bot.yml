@@ -1,4 +1,4 @@
-name: SKYDEV Post Engine
+name: SKYDEV Post Engine (Cloud)
 
 on:
   workflow_dispatch:
@@ -19,8 +19,7 @@ jobs:
   operasi_postingan:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      actions: write
+      actions: write  # Hanya butuh ini untuk menghapus log Actions (contents: write dihapus!)
     steps:
       - name: Ambil Kode Repo
         uses: actions/checkout@v4
@@ -31,27 +30,18 @@ jobs:
           python-version: '3.10'
           
       - name: Install Senjata (Dependencies)
-        # Tambahkan library supabase di sini
-        run: pip install curl_cffi==0.16.0 requests==2.34.2 aiofiles==25.1.0 supabase==2.31.0 typing_extensions==4.16.0
+        # PERBAIKAN: Dihapus aiofiles dan supabase (karena kita pakai REST API native yang super ringan)
+        run: pip install curl_cffi==0.16.0 requests==2.34.2 typing_extensions==4.16.0
         
       - name: Tembak Server PK XD
-        # Suntikkan URL dan Key dari Github Secrets ke dalam mesin Python
+        # PERBAIKAN: Gunakan SERVICE_KEY agar script python punya hak penuh menulis ke Database
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python like_cloud.py ${{ github.event.inputs.mode }} "${{ github.event.inputs.target_data }}" ${{ github.event.inputs.jumlah_bot }}
         
-      - name: Simpan Hasil Kerja ke GitHub
-        run: |
-          git config --global user.name "SKYDEV Automasi"
-          git config --global user.email "bot@skydev.id"
-          
-          # Hapus latest_posts.json dari tracking Git karena datanya sekarang lari ke Supabase
-          git add BOT/Akun_Baru/ActiveSessions.txt || true
-          git add BOT/History_Like/ || true
-          
-          git commit -m "Auto-Save: Update Sesi Aktif / History Like" || echo "Tidak ada perubahan data"
-          git push
+      # PERBAIKAN: Langkah "Simpan Hasil Kerja ke GitHub" DIHAPUS TOTAL! 
+      # Data otomatis mengalir ke Supabase tanpa membebani repository.
 
       - name: Sapu Bersih Log Server
         env:
