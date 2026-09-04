@@ -42,7 +42,6 @@ async def save_to_supabase(session, email, password, device_id, status):
     
     try:
         r = await session.post(endpoint, json=payload, headers=headers, timeout=15)
-        # 201 Created = Sukses masuk DB
         if r.status_code == 201:
             return True
         else:
@@ -53,7 +52,7 @@ async def save_to_supabase(session, email, password, device_id, status):
         return False
 
 # ==========================================
-# ENGINE REGISTER PKXD (TIDAK ADA PERUBAHAN LOGIKA GAME)
+# ENGINE REGISTER PKXD
 # ==========================================
 class PKXDSkydevRegisterEngine:
     def __init__(self):
@@ -96,11 +95,31 @@ class PKXDSkydevRegisterEngine:
 
     async def register_bot(self, session):
         device_id = str(uuid.uuid4())
-        domains = ["gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com", "protonmail.com"]
-        email = f"{uuid.uuid4().hex[:16]}@{random.choice(domains)}"
         
-        karakter = string.ascii_letters + string.digits
-        password = ''.join(random.choices(karakter, k=8))
+        # Penambahan domain yang lebih luas dan tidak mencurigakan
+        domains = [
+            "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", 
+            "icloud.com", "protonmail.com", "yandex.com", "mail.com", "zoho.com"
+        ]
+        
+        # 1. Buat username acak dengan panjang bervariasi (8 - 12 karakter)
+        panjang_user = random.randint(8, 12)
+        karakter_dasar = string.ascii_lowercase + string.digits
+        username = ''.join(random.choices(karakter_dasar, k=panjang_user))
+        
+        # 2. Sisipkan titik (.) atau underscore (_) secara acak di tengah
+        if random.choice([True, False]): # 50% peluang memiliki simbol
+            posisi = random.randint(3, len(username) - 3)
+            simbol = random.choice(['.', '_'])
+            username = username[:posisi] + simbol + username[posisi:]
+            
+        email = f"{username}@{random.choice(domains)}"
+        
+        # 3. Password "Manusiawi" (Diawali huruf besar, diikuti huruf kecil, diakhiri angka)
+        huruf_besar = random.choice(string.ascii_uppercase)
+        huruf_kecil = ''.join(random.choices(string.ascii_lowercase, k=random.randint(5, 7)))
+        angka_pass = ''.join(random.choices(string.digits, k=random.randint(2, 4)))
+        password = huruf_besar + huruf_kecil + angka_pass
 
         try:
             device_info = OrderedDict([
@@ -165,10 +184,7 @@ async def worker_task(engine, attempt_id, semaphore):
             result, list_data, _ = await engine.register_bot(session)
             
             if result in ["SUCCESS", "REGISTERED_ONLY"] and list_data:
-                # Pecah format "email|password|device_id"
                 email, password, device_id = list_data.split("|")
-                
-                # Kirim ke database Supabase
                 db_success = await save_to_supabase(session, email, password, device_id, result)
                 if not db_success:
                     result += " (Gagal masuk DB)"
@@ -197,7 +213,6 @@ async def main():
     
     print(f"[*] Mulai mendaftarkan bot...\n")
 
-    # Dihapus: file_lock karena Supabase sudah menangani write concurrency
     tasks = [asyncio.create_task(worker_task(engine, i+1, semaphore)) for i in range(target_accounts)]
     
     for completed_task in asyncio.as_completed(tasks):
