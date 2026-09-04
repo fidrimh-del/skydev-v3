@@ -7,7 +7,6 @@ import random
 import os
 import sys
 import asyncio
-import aiofiles
 from collections import OrderedDict
 from curl_cffi.requests import AsyncSession
 import urllib3
@@ -15,6 +14,47 @@ import string
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# ==========================================
+# KONFIGURASI SUPABASE
+# ==========================================
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
+async def save_to_supabase(session, email, password, device_id, status):
+    """Fungsi untuk menyimpan akun langsung ke Supabase tanpa file lokal."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[-] EROR: SUPABASE_URL atau SUPABASE_SERVICE_KEY belum diset!")
+        return False
+    
+    endpoint = f"{SUPABASE_URL}/rest/v1/accounts"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal"
+    }
+    payload = {
+        "email": email,
+        "password": password,
+        "device_id": device_id,
+        "status": status
+    }
+    
+    try:
+        r = await session.post(endpoint, json=payload, headers=headers, timeout=15)
+        # 201 Created = Sukses masuk DB
+        if r.status_code == 201:
+            return True
+        else:
+            print(f"[!] Gagal save ke DB: {r.status_code} - {r.text}")
+            return False
+    except Exception as e:
+        print(f"[!] Error koneksi ke Supabase: {str(e)}")
+        return False
+
+# ==========================================
+# ENGINE REGISTER PKXD (TIDAK ADA PERUBAHAN LOGIKA GAME)
+# ==========================================
 class PKXDSkydevRegisterEngine:
     def __init__(self):
         self.account_url = "https://account.faster.aftvrsys.com"
@@ -56,13 +96,9 @@ class PKXDSkydevRegisterEngine:
 
     async def register_bot(self, session):
         device_id = str(uuid.uuid4())
-        
         domains = ["gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com", "protonmail.com"]
-        
-        # PERBAIKAN: Email 12 karakter hex acak
         email = f"{uuid.uuid4().hex[:16]}@{random.choice(domains)}"
         
-        # PERBAIKAN: Password acak 8 karakter (huruf besar, kecil, angka)
         karakter = string.ascii_letters + string.digits
         password = ''.join(random.choices(karakter, k=8))
 
@@ -109,7 +145,7 @@ class PKXDSkydevRegisterEngine:
                 r6 = await session.post(self.lobby_url + "/lobby/allocation", data=json_p6.encode('utf-8'), headers=h6, timeout=30)
                 
                 if r6.status_code in [200, 201]:
-                    return "SUCCESS", f"{email}|{password}|{device_id}", f"{email}|{user_jwt}"
+                    return "SUCCESS", f"{email}|{password}|{device_id}", None
                 else:
                     return "REGISTERED_ONLY", f"{email}|{password}|{device_id}", None
             else:
@@ -118,60 +154,65 @@ class PKXDSkydevRegisterEngine:
         except Exception as e:
             return f"ERROR: {str(e)[:50]}", None, None
 
-async def worker_task(engine, attempt_id, semaphore, file_lock):
+# ==========================================
+# WORKER & MAIN LOOP
+# ==========================================
+async def worker_task(engine, attempt_id, semaphore):
     async with semaphore:
         await asyncio.sleep(random.uniform(1.0, 3.0))
         
         async with AsyncSession(impersonate=random.choice(engine.impersonate_targets), verify=False) as session:
-            result, list_data, session_data = await engine.register_bot(session)
+            result, list_data, _ = await engine.register_bot(session)
             
             if result in ["SUCCESS", "REGISTERED_ONLY"] and list_data:
-                async with file_lock:
-                    async with aiofiles.open("List.txt", "a") as f:
-                        await f.write(list_data + "\n")
-                    if session_data:
-                        async with aiofiles.open("ActiveSessions.txt", "a") as f:
-                            await f.write(session_data + "\n")
+                # Pecah format "email|password|device_id"
+                email, password, device_id = list_data.split("|")
+                
+                # Kirim ke database Supabase
+                db_success = await save_to_supabase(session, email, password, device_id, result)
+                if not db_success:
+                    result += " (Gagal masuk DB)"
             
             return attempt_id, result
 
 async def main():
     target_accounts = int(sys.argv[1]) if len(sys.argv) > 1 else 5
-        
-    print(f"[*] SKYDEV V2 MAX: Memulai proses produksi {target_accounts} akun (Taktik Gerilya)...")
     
-    open("List.txt", "a").close()
-    open("ActiveSessions.txt", "a").close()
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[!] PERINGATAN: Kredensial Supabase (URL/KEY) tidak ditemukan.")
+        print("[!] Pastikan Anda telah mengatur Environment Variables sebelum menjalankan script ini.")
+        sys.exit(1)
+        
+    print(f"[*] SKYDEV V3 CLOUD: Memulai proses produksi {target_accounts} akun ke Supabase...")
         
     engine = PKXDSkydevRegisterEngine()
-    
     semaphore = asyncio.Semaphore(5) 
-    file_lock = asyncio.Lock()
     
     success_count = 0
     blocked_count = 0
 
     waktu_tunggu = random.uniform(1.0, 30.0)
-    print(f"[*] Menyamarkan IP... Server ini akan diam selama {waktu_tunggu:.1f} detik sebelum menyerang.")
+    print(f"[*] Menyamarkan IP... Menunggu {waktu_tunggu:.1f} detik sebelum mengeksekusi.")
     await asyncio.sleep(waktu_tunggu)
     
-    print(f"[*] Mulai menembak gerbang server PK XD!\n")
+    print(f"[*] Mulai mendaftarkan bot...\n")
 
-    tasks = [asyncio.create_task(worker_task(engine, i+1, semaphore, file_lock)) for i in range(target_accounts)]
+    # Dihapus: file_lock karena Supabase sudah menangani write concurrency
+    tasks = [asyncio.create_task(worker_task(engine, i+1, semaphore)) for i in range(target_accounts)]
     
     for completed_task in asyncio.as_completed(tasks):
         attempt_id, result = await completed_task
         
-        if result in ["SUCCESS", "REGISTERED_ONLY"]:
+        if "SUCCESS" in result or "REGISTERED_ONLY" in result:
             success_count += 1
-            print(f"[+] Akun {attempt_id} -> BERHASIL")
+            print(f"[+] Akun {attempt_id} -> {result}")
         elif "BLOCKED" in result:
             blocked_count += 1
             print(f"[-] Akun {attempt_id} -> {result}")
         else:
             print(f"[!] Akun {attempt_id} -> {result}")
             
-    print(f"\n[HASIL TEST V2] Sukses: {success_count} | Terblokir: {blocked_count} | Total: {target_accounts}")
+    print(f"\n[HASIL PRODUKSI] Sukses DB: {success_count} | Terblokir/Gagal: {blocked_count} | Total: {target_accounts}")
 
 if __name__ == "__main__":
     if os.name == 'nt':
