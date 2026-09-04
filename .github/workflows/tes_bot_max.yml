@@ -1,4 +1,4 @@
-name: SKYDEV MAX Engine
+name: SKYDEV MAX Engine (Cloud)
 
 on:
   workflow_dispatch:
@@ -9,12 +9,12 @@ on:
         default: '10'
 
 jobs:
-  # TAHAP 1: 20 PASUKAN BEKERJA BERSAMAAN
+  # TAHAP 1: 20 PASUKAN BEKERJA BERSAMAAN (KIRIM LANGSUNG KE SUPABASE)
   pabrik_akun_max:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # INI KUNCINYA: 20 Mesin menyala bersamaan!
+        # 20 Mesin menyala bersamaan, langsung menembak API Supabase
         pasukan: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - name: Ambil Kode
@@ -26,52 +26,21 @@ jobs:
           python-version: '3.10'
           
       - name: Install Dependencies
-        # PERUBAHAN DI SINI: Menambahkan aiofiles
-        run: pip install curl_cffi==0.16.0 requests==2.34.2 aiofiles==25.1.0 typing_extensions==4.16.0
+        # PERBAIKAN: Menghapus aiofiles karena sudah tidak menggunakan file teks lokal
+        run: pip install curl_cffi==0.16.0 requests==2.34.2 typing_extensions==4.16.0
         
-      - name: Eksekusi
+      - name: Eksekusi Engine V3 Cloud
+        # PERBAIKAN: Mengambil kredensial Supabase dari GitHub Secrets ke dalam script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python register_test.py ${{ github.event.inputs.jumlah_per_server }}
         
-      - name: Setor Hasil Sementara
-        uses: actions/upload-artifact@v4
-        with:
-          name: Hasil-Pasukan-${{ matrix.pasukan }}
-          path: |
-            List.txt
-            ActiveSessions.txt
+      # Bagian 'Setor Hasil Sementara' dihapus total karena data sudah masuk ke database
 
-  # TAHAP 2: 1 KOMANDAN MENGGABUNGKAN (Menunggu 20 mesin selesai)
-  simpan_ke_repo_max:
-    needs: pabrik_akun_max
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Ambil Kode Repo
-        uses: actions/checkout@v4
-
-      - name: Tarik Semua Hasil Sementara
-        uses: actions/download-artifact@v4
-        with:
-          path: brankas_sementara
-
-      - name: Gabungkan File
-        run: |
-          mkdir -p BOT/Akun_Baru
-          cat brankas_sementara/Hasil-Pasukan-*/List.txt >> BOT/Akun_Baru/List.txt 2>/dev/null || true
-          cat brankas_sementara/Hasil-Pasukan-*/ActiveSessions.txt >> BOT/Akun_Baru/ActiveSessions.txt 2>/dev/null || true
-
-      - name: Push Permanen
-        run: |
-          git config --global user.name "SKYDEV Automasi"
-          git config --global user.email "bot@skydev.id"
-          git add BOT/Akun_Baru/
-          git commit -m "Auto-Save: SKYDEV-MAX memproduksi akun massal (V2)" || echo "Tidak ada akun baru"
-          git push
-
-  # TAHAP 3: TUKANG SAPU
+  # TAHAP 2: TUKANG SAPU (Menghapus log github agar tidak penuh)
   bersih_history_max:
-    needs: simpan_ke_repo_max
+    needs: pabrik_akun_max
     runs-on: ubuntu-latest
     permissions:
       actions: write
