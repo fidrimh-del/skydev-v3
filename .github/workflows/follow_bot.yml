@@ -1,4 +1,4 @@
-name: SKYDEV Follow Engine
+name: SKYDEV Follow Engine (Cloud)
 
 on:
   workflow_dispatch:
@@ -15,10 +15,9 @@ jobs:
   suntik_follow:
     runs-on: ubuntu-latest
     permissions:
-      contents: write 
-      actions: write  
+      actions: write  # Hanya butuh ini untuk menghapus history log GH Actions
     steps:
-      - name: Ambil Kode
+      - name: Ambil Kode Repo
         uses: actions/checkout@v4
         
       - name: Siapkan Python
@@ -27,24 +26,18 @@ jobs:
           python-version: '3.10'
           
       - name: Install Dependencies
-        # WAJIB menambahkan aiofiles untuk mendukung engine V2
-        run: pip install curl_cffi==0.16.0 requests==2.34.2 aiofiles==25.1.0 typing_extensions==4.16.0
+        # PERBAIKAN: Dihapus aiofiles, karena sudah murni database
+        run: pip install curl_cffi==0.16.0 requests==2.34.2 typing_extensions==4.16.0
         
-      - name: Eksekusi Follow Pintar
+      - name: Eksekusi Follow Pintar V3
+        # PERBAIKAN: Masukkan token Supabase agar script bisa komunikasi ke DB
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python follow_cloud.py ${{ github.event.inputs.target_uuid }} ${{ github.event.inputs.jumlah_order }}
         
-      - name: Simpan Data ke GitHub
-        run: |
-          git config --global user.name "SKYDEV Automasi"
-          git config --global user.email "bot@skydev.id"
-          
-          # Amankan berkas history pengerjaan target
-          git add BOT/History/
-          # Amankan sesi aktif baru jika ada bot yang auto-relogin di background
-          git add BOT/Akun_Baru/ActiveSessions.txt
-          
-          git commit -m "Auto-Save: History & Sesi Aktif [Target: ${{ github.event.inputs.target_uuid }}]" || echo "Tidak ada data baru"
-          git push
+      # PERBAIKAN: Tahap "Simpan Data ke GitHub" (git add, git commit, git push) 
+      # telah DIHAPUS TOTAL. Data riwayat follow sudah otomatis tersimpan ke tabel Supabase.
 
       - name: Tukang Sapu (Hapus Log Lama)
         env:
