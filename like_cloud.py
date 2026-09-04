@@ -6,35 +6,19 @@ import sys
 import json
 import base64
 import asyncio
-import aiofiles
 import hmac
 import hashlib
 from collections import OrderedDict
 from curl_cffi.requests import AsyncSession
-from supabase import create_client, Client # TAMBAHAN MODULE SUPABASE
 
 # Mematikan peringatan SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
-# FUNGSI PENGECEK JWT (0 Detik / Tanpa Internet)
+# KONFIGURASI SUPABASE CLOUD
 # ==========================================
-def ksatria_cek_token_expired(jwt_token):
-    # Proteksi khusus jika token masih "KOSONG" (Bot baru yang belum punya sesi)
-    if not jwt_token or jwt_token == "KOSONG":
-        return True 
-        
-    try:
-        payload_b64 = jwt_token.split('.')[1]
-        payload_b64 += '=' * (-len(payload_b64) % 4)
-        payload = json.loads(base64.b64decode(payload_b64).decode('utf-8'))
-        
-        # Buffer aman 5 menit (300 detik)
-        if time.time() > (payload.get('exp', 0) - 300):
-            return True # Expired
-        return False # Masih Aktif
-    except:
-        return True
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 
 class PKXDSkydevLikeEngine:
     def __init__(self):
@@ -66,8 +50,7 @@ class PKXDSkydevLikeEngine:
         h = hmac.new(h, b"x-fstr-signature", hashlib.sha256).digest()
         return base64.b64encode(h).decode('utf-8')
 
-    # FUNGSI AUTO-RELOGIN (Dewa Penyembuh Sesi)
-    async def do_login(self, email, password, device_id, session):
+    async def login_and_get_token(self, email, password, device_id, session):
         try:
             device_info = OrderedDict([
                 ("userAgent", ""), ("platform", "DESKTOP"), ("system", "WindowsPlayer"),
@@ -79,97 +62,88 @@ class PKXDSkydevLikeEngine:
                 ("country", "Unknown"), ("deviceId", device_id)
             ])
 
+            # 1. Auth Sessions
             p1 = OrderedDict([("identityProvider", "FASTER"), ("credentials", {"type": "EMAIL", "email": email, "password": password}), ("deviceInfo", device_info)])
-            json_p1 = json.dumps(p1, separators=(',', ':'), ensure_ascii=False)
-            body_p1 = json_p1.encode('utf-8')
-            
+            b_p1 = json.dumps(p1, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
             h1 = self.headers_base.copy()
             h1["x-fstr-application-key"] = self.app_key
-            h1["x-fstr-signature"] = self.compute_signature("POST", "/v1/auth/sessions", body_p1)
+            h1["x-fstr-signature"] = self.compute_signature("POST", "/v1/auth/sessions", b_p1)
             
-            r1 = await session.post(self.account_url + "/v1/auth/sessions", data=body_p1, headers=h1, timeout=30)
-            if r1.status_code != 200: return {"status": "FAILED"}
-
+            r1 = await session.post(self.account_url + "/v1/auth/sessions", data=b_p1, headers=h1, timeout=20)
+            if r1.status_code != 200: return None
+            
             auth_token = r1.json().get("authToken")
             await asyncio.sleep(random.uniform(0.1, 0.3)) 
 
+            # 2. Users Sessions
             p2 = OrderedDict([("authToken", auth_token), ("deviceInfo", device_info)])
-            json_p2 = json.dumps(p2, separators=(',', ':'), ensure_ascii=False)
-            body_p2 = json_p2.encode('utf-8')
-            
+            b_p2 = json.dumps(p2, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
             h2 = self.headers_base.copy()
             h2["x-fstr-application-key"] = self.app_key
-            h2["x-fstr-signature"] = self.compute_signature("POST", "/v1/users/sessions", body_p2)
+            h2["x-fstr-signature"] = self.compute_signature("POST", "/v1/users/sessions", b_p2)
             
-            r2 = await session.post(self.account_url + "/v1/users/sessions", data=body_p2, headers=h2, timeout=30)
+            r2 = await session.post(self.account_url + "/v1/users/sessions", data=b_p2, headers=h2, timeout=20)
             user_jwt = r2.json().get("userToken")
-            if not user_jwt: return {"status": "FAILED"}
+            if not user_jwt: return None
                 
             await asyncio.sleep(random.uniform(0.1, 0.3))
 
+            # 3. Lobby Allocation
             p3 = {"userToken": user_jwt, "gameServerProtocolVersion": self.game_protocol, "isPrivate": False}
-            json_p3 = json.dumps(p3, separators=(',', ':'), ensure_ascii=False)
+            b_p3 = json.dumps(p3, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
             h3 = self.headers_base.copy()
             if "x-fstr-application-key" in h3: del h3["x-fstr-application-key"]
             
-            r3 = await session.post(self.lobby_url + "/lobby/allocation", data=json_p3.encode('utf-8'), headers=h3, timeout=30)
+            r3 = await session.post(self.lobby_url + "/lobby/allocation", data=b_p3, headers=h3, timeout=20)
             
             if r3.status_code in [200, 201]:
-                return {"status": "SUCCESS", "jwt": user_jwt}
-            return {"status": "FAILED"}
+                return user_jwt
+            return None
         except:
-            return {"status": "ERROR"}
+            return None
 
-    # MODE GET ASYNC: MENGAMBIL 50 POSTINGAN TERBARU (DENGAN MULTI-KEY IMAGE PROTEKSI)
-    async def fetch_posts(self, target_uid, jwt_token):
+    # MODE GET: MENGAMBIL POSTINGAN TERBARU
+    async def fetch_posts(self, target_uid, jwt_token, session):
         try:
-            async with AsyncSession(impersonate=random.choice(self.impersonate_targets), verify=False) as session:
-                headers = self.headers_base.copy()
-                headers["Authorization"] = f"Bearer {jwt_token}"
+            headers = self.headers_base.copy()
+            headers["Authorization"] = f"Bearer {jwt_token}"
+            
+            clean_uid = target_uid.replace('"', '').replace("'", "").strip()
+            endpoint = f"{self.api_url}/api/v1/posts/profile/{clean_uid}?batchSize=50"
+            
+            r = await session.get(endpoint, headers=headers, timeout=15)
+            
+            if r.status_code == 200:
+                data = r.json()
+                extracted_data = []
                 
-                clean_uid = target_uid.replace('"', '').replace("'", "").strip()
-                endpoint = f"{self.api_url}/api/v1/posts/profile/{clean_uid}?batchSize=50"
-                
-                r = await session.get(endpoint, headers=headers, timeout=15)
-                
-                if r.status_code == 200:
-                    data = r.json()
-                    extracted_data = []
-                    
-                    if "posts" in data:
-                        for post in data["posts"]:
-                            p_id = post.get("id", "")
-                            likes = post.get("likes", 0)
-                            
-                            # PROTEKSI JARING GAMBAR (Menangkal error URL kosong)
-                            content_data = post.get("content", {})
-                            if isinstance(content_data, str):
-                                try:
-                                    content_data = json.loads(content_data)
-                                except:
-                                    content_data = {}
+                if "posts" in data:
+                    for post in data["posts"]:
+                        p_id = post.get("id", "")
+                        likes = post.get("likes", 0)
+                        
+                        content_data = post.get("content", {})
+                        if isinstance(content_data, str):
+                            try: content_data = json.loads(content_data)
+                            except: content_data = {}
 
-                            img_url = content_data.get("image", "")
-                            if not img_url:
-                                img_url = content_data.get("imageUrl", "")
-                            if not img_url:
-                                img_url = content_data.get("media", {}).get("url", "")
-                            
-                            if p_id:
-                                extracted_data.append({
-                                    "post_id": p_id,
-                                    "image_url": img_url,
-                                    "likes_count": likes
-                                })
-                        return 200, extracted_data
-                    return 200, []
-                elif r.status_code == 401:
-                    return 401, None
-                return r.status_code, None
+                        img_url = content_data.get("image", "")
+                        if not img_url: img_url = content_data.get("imageUrl", "")
+                        if not img_url: img_url = content_data.get("media", {}).get("url", "")
+                        
+                        if p_id:
+                            extracted_data.append({
+                                "post_id": p_id,
+                                "image_url": img_url,
+                                "likes_count": likes
+                            })
+                    return 200, extracted_data
+                return 200, []
+            return r.status_code, None
         except Exception:
             return 000, None
 
-    # MODE LIKE ASYNC: MENEMBAK LIKE KE POSTINGAN
+    # MODE LIKE: MENEMBAK LIKE KE POSTINGAN
     async def do_like(self, jwt_token, post_id, session):
         try:
             headers = self.headers_base.copy()
@@ -179,207 +153,168 @@ class PKXDSkydevLikeEngine:
             await asyncio.sleep(random.uniform(0.1, 0.4))
             r = await session.post(endpoint, headers=headers, data=b"", timeout=15)
             
-            if r.status_code in [200, 201, 204]:
-                return "SUCCESS"
-            elif r.status_code == 401:
-                return "EXPIRED"
-            return f"FAILED_{r.status_code}"
+            return r.status_code in [200, 201, 204]
         except:
-            return "ERROR"
+            return False
 
-# Fungsi Penulisan Berkas Sesi Secara Aman (Mendukung Penambahan Bot Baru)
-async def update_token_di_file(filepath, email, token_baru, file_lock):
-    async with file_lock:
-        lines = []
-        if os.path.exists(filepath):
-            async with aiofiles.open(filepath, mode='r') as f:
-                lines = await f.readlines()
-                
-        found = False
-        async with aiofiles.open(filepath, mode='w') as f:
-            for line in lines:
-                parts = line.strip().split('|')
-                if len(parts) >= 2 and parts[0] == email:
-                    await f.write(f"{email}|{token_baru}\n")
-                    found = True
-                else:
-                    await f.write(line)
-            if not found:
-                await f.write(f"{email}|{token_baru}\n")
+# ==========================================
+# FUNGSI SUPABASE (REST API)
+# ==========================================
+async def sb_upsert_youni_posts(session_http, target_uid, posts_data):
+    if not SUPABASE_URL or not SUPABASE_KEY: return
+    endpoint = f"{SUPABASE_URL}/rest/v1/temp_youni_posts"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates"
+    }
+    payload = {"target_uid": target_uid, "posts_data": posts_data}
+    try:
+        await session_http.post(endpoint, json=payload, headers=headers, timeout=20)
+    except Exception as e:
+        print(f"[-] Gagal push Youni Posts ke Supabase: {e}")
 
-# Worker Pintar Pengeksekusi Like Massal + Perekam History
-async def worker_like_task(engine, email, jwt_token, post_id, akun_detail, semaphore, file_lock, gudang_bot_path, pbar, berhasil_dipakai):
+async def sb_get_fresh_like_bots(session_http, post_id, limit):
+    endpoint = f"{SUPABASE_URL}/rest/v1/rpc/get_fresh_like_bots"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {"p_post_id": post_id, "p_limit": limit}
+    try:
+        r = await session_http.post(endpoint, json=payload, headers=headers, timeout=20)
+        if r.status_code == 200: return r.json()
+        return []
+    except:
+        return []
+
+async def sb_record_like_history(session_http, post_id, success_emails):
+    if not success_emails: return
+    endpoint = f"{SUPABASE_URL}/rest/v1/like_history"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=ignore-duplicates"
+    }
+    payload = [{"post_id": post_id, "account_email": email} for email in success_emails]
+    try:
+        await session_http.post(endpoint, json=payload, headers=headers, timeout=30)
+    except:
+        pass
+
+async def get_master_bot(session_http):
+    """Mengambil 1 bot acak dari Supabase untuk digunakan saat Get Posts (tanpa menghabiskan kuota follow)"""
+    endpoint = f"{SUPABASE_URL}/rest/v1/accounts?select=email,password,device_id&status=eq.SUCCESS&limit=1"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
+    try:
+        r = await session_http.get(endpoint, headers=headers, timeout=15)
+        if r.status_code == 200 and len(r.json()) > 0: return r.json()[0]
+        return None
+    except:
+        return None
+
+# ==========================================
+# WORKER LIKE
+# ==========================================
+async def worker_like_task(engine, bot, post_id, semaphore, pbar, success_list):
     async with semaphore:
         async with AsyncSession(impersonate=random.choice(engine.impersonate_targets), verify=False) as session:
-            token_aktif = jwt_token
+            # Smart Login
+            token = await engine.login_and_get_token(bot["email"], bot["password"], bot["device_id"], session)
             
-            if ksatria_cek_token_expired(jwt_token):
-                password = akun_detail.get('password')
-                device_id = akun_detail.get('device_id')
-                
-                if password and device_id:
-                    await asyncio.sleep(random.uniform(0.2, 1.5))
-                    hasil_relogin = await engine.do_login(email, password, device_id, session)
-                    if hasil_relogin.get("status") == "SUCCESS":
-                        token_aktif = hasil_relogin.get("jwt")
-                        asyncio.create_task(update_token_di_file(gudang_bot_path, email, token_aktif, file_lock))
-                    else:
-                        pbar['processed'] += 1
-                        return "FAILED_RELOGIN"
-                else:
-                    pbar['processed'] += 1
-                    return "NO_CREDENTIALS"
-
-            hasil = await engine.do_like(token_aktif, post_id, session)
+            if token:
+                liked = await engine.do_like(token, post_id, session)
+                if liked:
+                    success_list.append(bot["email"])
+                    pbar['success'] += 1
+            
             pbar['processed'] += 1
-            if hasil == "SUCCESS":
-                pbar['success'] += 1
-                berhasil_dipakai.append(email) 
-                
-            print(f"\r[SKYDEV] Progres Like: {pbar['success']}/{pbar['total']}", end="", flush=True)
-            return hasil
+            print(f"\r[SKYDEV] Progres Like Post {post_id[:6]}: {pbar['success']}/{pbar['total']}", end="", flush=True)
 
 async def main():
     if len(sys.argv) < 3:
         print("[!] Format Error!")
         sys.exit()
 
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[!] EROR: Kredensial Supabase tidak ditemukan!")
+        sys.exit()
+
     mode = sys.argv[1].upper()
     engine = PKXDSkydevLikeEngine()
     
-    gudang_bot_path = "BOT/Akun_Baru/ActiveSessions.txt"
-    list_path = "BOT/Akun_Baru/List.txt"
-    
-    detail_akun = {}
-    semua_bot_dict = {}
-
-    if os.path.exists(list_path):
-        with open(list_path, "r") as f:
-            for line in f:
-                parts = line.strip().split('|')
-                if len(parts) >= 3:
-                    email = parts[0].strip()
-                    detail_akun[email] = {"password": parts[1].strip(), "device_id": parts[2].strip()}
-                    semua_bot_dict[email] = "KOSONG"
-
-    if os.path.exists(gudang_bot_path):
-        with open(gudang_bot_path, "r") as f:
-            for line in f:
-                parts = line.strip().split('|')
-                if len(parts) >= 2:
-                    email = parts[0].strip()
-                    token = parts[1].strip()
-                    semua_bot_dict[email] = token
-
-    semua_bot = [(email, token) for email, token in semua_bot_dict.items()]
-
-    if not semua_bot:
-        print("[!] Gudang bot kosong! Pastikan List.txt memiliki data.")
-        sys.exit()
-
-    print(f"[*] Berhasil memuat total {len(semua_bot)} bot dari kombinasi List & Session.")
-
     # ==========================================
-    # INTERMEZZO MODE GET (TERKONEKSI SUPABASE)
+    # MODE GET POSTS (SUPABASE CLOUD)
     # ==========================================
     if mode == "GET":
         target_uid = sys.argv[2].strip()
         print(f"[*] Misi: Tarik data postingan dari -> {target_uid}")
         
-        email_master, jwt_master = semua_bot[0]
-        print(f"[*] Menggunakan Agen Tunggal: {email_master}")
-        
-        if ksatria_cek_token_expired(jwt_master):
-            print("[*] Token Agen Master Expired/Kosong. Memicu login ulang darurat...")
-            akun_info = detail_akun.get(email_master, {})
-            if akun_info:
-                async with AsyncSession(impersonate="chrome110", verify=False) as sess:
-                    res = await engine.do_login(email_master, akun_info['password'], akun_info['device_id'], sess)
-                    if res.get("status") == "SUCCESS":
-                        jwt_master = res.get("jwt")
-                        lock_master = asyncio.Lock()
-                        await update_token_di_file(gudang_bot_path, email_master, jwt_master, lock_master)
-                        print("[+] Token Agen Master berhasil diperbarui!")
+        async with AsyncSession(verify=False) as session_http:
+            master_bot = await get_master_bot(session_http)
+            
+            if not master_bot:
+                print("[-] Tidak ada akun bot di database untuk digunakan sebagai Master.")
+                return
 
-        status, data = await engine.fetch_posts(target_uid, jwt_master)
-        
-        if status == 200:
-            print(f"[+] Akses Diterima! Menarik {len(data)} postingan.")
-            
-            # --- BLOK EKSEKUSI SUPABASE ---
-            sb_url = os.environ.get("SUPABASE_URL")
-            sb_key = os.environ.get("SUPABASE_KEY")
-            
-            if sb_url and sb_key:
-                try:
-                    supabase_client: Client = create_client(sb_url, sb_key)
-                    payload = {
-                        "target_uid": target_uid.replace('"', ''),
-                        "posts_data": data
-                    }
-                    supabase_client.table("temp_youni_posts").upsert(payload).execute()
-                    print("[+] Berhasil menyimpan Data Postingan secara real-time ke Database Supabase!")
-                except Exception as e:
-                    print(f"[-] Gagal push ke Supabase: {e}")
-            else:
-                print("[-] PERINGATAN: Kredensial Supabase (URL/KEY) tidak ditemukan di Environment GitHub Actions!")
+            print(f"[*] Login Agen Master: {master_bot['email']}...")
+            async with AsyncSession(impersonate="chrome110", verify=False) as session_game:
+                master_token = await engine.login_and_get_token(master_bot["email"], master_bot["password"], master_bot["device_id"], session_game)
                 
-        else:
-            print(f"[-] Gagal Mengambil Data Postingan (Status Code: {status}).")
+                if master_token:
+                    status, data = await engine.fetch_posts(target_uid, master_token, session_game)
+                    if status == 200:
+                        print(f"[+] Berhasil menarik {len(data)} postingan. Menyimpan ke Supabase...")
+                        await sb_upsert_youni_posts(session_http, target_uid, data)
+                        print("[+] Data Postingan sukses masuk ke Database!")
+                    else:
+                        print(f"[-] Gagal Mengambil Data Postingan (Kode: {status}).")
+                else:
+                    print("[-] Master bot gagal login.")
 
     # ==========================================
-    # INTERMEZZO MODE LIKE (SERANGAN MASSAL + HISTORY)
+    # MODE LIKE (SUPABASE CLOUD)
     # ==========================================
     elif mode == "LIKE":
         post_ids_raw = sys.argv[2].strip()
         jumlah_order = int(sys.argv[3].strip())
         
         target_posts = [p for p in post_ids_raw.split(',') if p.strip()]
-        
         semaphore = asyncio.Semaphore(150)
-        file_lock = asyncio.Lock()
         
-        for p_id in target_posts:
-            print(f"\n[*] --- Menyerang Postingan: {p_id} ---")
-            
-            history_path = f"BOT/History_Like/{p_id}.txt"
-            bot_bekas = set()
-            if os.path.exists(history_path):
-                with open(history_path, "r") as f:
-                    bot_bekas.update(f.read().splitlines())
-            
-            bot_siap_pakai = []
-            for email, jwt in semua_bot:
-                if email not in bot_bekas:
-                    bot_siap_pakai.append((email, jwt))
-                    if len(bot_siap_pakai) == jumlah_order: break
-
-            if len(bot_siap_pakai) == 0:
-                print(f"[!] Seluruh stok bot di gudang sudah me-like postingan ini. SKIP!")
-                continue
+        async with AsyncSession(verify=False) as session_http:
+            for p_id in target_posts:
+                print(f"\n[*] --- Memulai Operasi Like Postingan: {p_id} ---")
                 
-            if len(bot_siap_pakai) < jumlah_order:
-                print(f"[-] Peringatan: Hanya menemukan {len(bot_siap_pakai)} bot segar dari {jumlah_order} yang diminta.")
-
-            pbar = {'processed': 0, 'success': 0, 'total': len(bot_siap_pakai)}
-            berhasil_dipakai = []
-            
-            tasks = []
-            for email, jwt in bot_siap_pakai:
-                akun_info = detail_akun.get(email, {})
-                task = asyncio.create_task(worker_like_task(engine, email, jwt, p_id, akun_info, semaphore, file_lock, gudang_bot_path, pbar, berhasil_dipakai))
-                tasks.append(task)
+                # Tarik bot yang belum pernah like postingan ini
+                bots = await sb_get_fresh_like_bots(session_http, p_id, jumlah_order)
                 
-            await asyncio.gather(*tasks)
-            print(f"\n[+] Tembakan selesai untuk {p_id[:8]}! Sukses: {pbar['success']}")
-            
-            if berhasil_dipakai:
-                os.makedirs("BOT/History_Like", exist_ok=True)
-                async with aiofiles.open(history_path, "a") as f:
-                    for email in berhasil_dipakai:
-                        await f.write(email + "\n")
-                print(f"[*] Database History Like diupdate! {len(berhasil_dipakai)} bot dicatat.")
-            
+                if not bots:
+                    print(f"[!] Stok bot habis atau semua bot sudah me-like postingan ini. SKIP!")
+                    continue
+                    
+                if len(bots) < jumlah_order:
+                    print(f"[-] Peringatan: Hanya menemukan {len(bots)} bot segar.")
+
+                pbar = {'processed': 0, 'success': 0, 'total': len(bots)}
+                success_list = []
+                
+                tasks = [asyncio.create_task(worker_like_task(engine, bot, p_id, semaphore, pbar, success_list)) for bot in bots]
+                await asyncio.gather(*tasks)
+                
+                print(f"\n[+] Tembakan selesai! {pbar['success']} Likes berhasil dikirim.")
+                
+                # Simpan History ke Supabase
+                if success_list:
+                    await sb_record_like_history(session_http, p_id, success_list)
+                    print(f"[*] Riwayat berhasil dicatat ke Supabase.")
+                
         print("\n[+] Misi LIKE Massal Selesai.")
 
 if __name__ == "__main__":
