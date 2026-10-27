@@ -51,7 +51,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install curl_cffi
+        run: pip install curl_cffi urllib3
 
       - name: Run probe
         env:
