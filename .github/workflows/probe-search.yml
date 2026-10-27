@@ -1,0 +1,66 @@
+# Workflow probe: cari endpoint HTTP untuk lookup UUID dari nama.
+#
+# CARA PAKAI:
+# 1. Taruh file ini di repo panel, tepat di:
+#      .github/workflows/probe-search.yml
+#    (GitHub Actions HANYA membaca workflow dari folder itu.)
+# 2. Taruh probe_search.py di root repo yang sama
+#    (kalau ditaruh di subfolder, ubah baris "python probe_search.py"
+#    di bawah menjadi mis. "python scripts/probe_search.py").
+# 3. Di repo -> Settings -> Secrets and variables -> Actions ->
+#    New repository secret, buat 2 secret ini (nilainya TIDAK
+#    pernah ditulis di file ini maupun di kode):
+#      SUPABASE_URL, SUPABASE_SERVICE_KEY
+#    Akun login diambil dari stok bot Supabase, jadi tidak
+#    perlu secret akun lookup terpisah.
+#    FSTR_APP_KEY / FSTR_APP_SECRET untuk sementara di-hardcode
+#    di probe_search.py (uji coba, repo private); setelah probe
+#    berhasil, buat keduanya sebagai Secrets dan hapus nilai
+#    hardcode dari script — env di bawah ini sudah siap dan
+#    akan menang otomatis kalau secret-nya sudah ada.
+# 4. Di repo -> tab Actions -> "Probe UUID Search" ->
+#    Run workflow -> isi search_name (mis. tes) -> Run workflow.
+# 5. Buka run-nya, lihat log step "Run probe": laporkan baris
+#    status 200 (kalau ada) + isi body-nya.
+#
+# Catatan: workflow ini manual (workflow_dispatch) karena ini
+# masih tahap probe. Workflow produksi nanti trigger-nya beda
+# (dipicu shop saat order dibuat, atau polling berkala).
+
+name: Probe UUID Search
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_name:
+        description: "Nama pemain yang dicari (contoh: tes)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install curl_cffi urllib3
+
+      - name: Run probe
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          SEARCH_NAME: ${{ inputs.search_name }}
+        run: python probe_search.py
