@@ -111,10 +111,15 @@ def show_body(body, indent=0):
         for k, v in body.items():
             if isinstance(v, (dict, list)):
                 print(f"{pad}- {k}: {redact(k, v)}")
-                if isinstance(v, dict) and indent < 1:
-                    show_body(v, indent + 1)
-                elif isinstance(v, list) and v and isinstance(v[0], dict) and indent < 1:
-                    show_body(v[0], indent + 1)
+                if indent < 1:
+                    if isinstance(v, dict):
+                        show_body(v, indent + 1)
+                    elif isinstance(v, list):
+                        for item in v:
+                            if isinstance(item, dict):
+                                show_body(item, indent + 1)
+                            else:
+                                print(f"{pad}  - {redact(k, item)}")
             else:
                 print(f"{pad}- {k} = {redact(k, v)}")
     else:
@@ -122,8 +127,20 @@ def show_body(body, indent=0):
 
 
 def find_host_port(body):
-    """Cari kandidat host/port di body allocation (top-level + 1 level)."""
+    """Cari host/port di body allocation.
+
+    PERBAIKAN dari run sebelumnya: gameServerId mengandung titik
+    (dari '1.93.0') sehingga detektor lama salah mengira ID itu
+    sebagai host. Sekarang: kunci eksak dulu (gameServerAddress /
+    gameServerPort), lalu fallback pola IPv4 — dan nilai yang
+    mengandung '::' (format ID server) TIDAK PERNAH dianggap host.
+    """
+    import re
     host = port = None
+    ipv4 = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+
+    def ok_host(v):
+        return isinstance(v, str) and v and "::" not in v and " " not in v
 
     def scan(d):
         nonlocal host, port
@@ -131,16 +148,33 @@ def find_host_port(body):
             return
         for k, v in d.items():
             lk = k.lower()
-            if host is None and isinstance(v, str) and any(
-                t in lk for t in ("host", "address", "ip", "server")
-            ) and "." in v:
+            if host is None and lk in ("gameserveraddress", "address",
+                                       "host", "hostname", "ip") and ok_host(v):
                 host = v
-            if port is None and isinstance(v, int) and "port" in lk:
+            if port is None and lk in ("gameserverport", "port",
+                                       "tcpport") and isinstance(v, int):
                 port = v
+        for v in d.values():
             if isinstance(v, dict):
                 scan(v)
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        scan(item)
 
     scan(body)
+    if host is None:
+        # Fallback: string apa pun yang persis berbentuk IPv4.
+        def scan_ip(d):
+            nonlocal host
+            if not isinstance(d, dict):
+                return
+            for k, v in d.items():
+                if host is None and isinstance(v, str) and ipv4.match(v):
+                    host = v
+                elif isinstance(v, dict):
+                    scan_ip(v)
+        scan_ip(body)
     return host, port
 
 
