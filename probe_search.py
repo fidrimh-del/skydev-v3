@@ -46,9 +46,15 @@ import base64
 import random
 from collections import OrderedDict
 from curl_cffi.requests import AsyncSession
-import urllib3
+try:
+    # Opsional saja (supaya tidak ada warning verify=False).
+    # curl_cffi tidak bergantung ke urllib3, jadi import ini
+    # tidak boleh menggagalkan script kalau paketnya tidak ada.
+    import urllib3
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except ImportError:
+    pass
 
 ACCOUNT_URL = "https://account.faster.aftvrsys.com"
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -92,111 +98,3 @@ async def login_and_get_jwt(email, password, device_id, session):
         ("pushToken", ""), ("cloudId", ""), ("carrierId", ""),
         ("timezone", "SE Asia Standard Time"), ("language", "EN"),
         ("country", "Unknown"), ("deviceId", device_id),
-    ])
-
-    p1 = OrderedDict([
-        ("identityProvider", "FASTER"),
-        ("credentials", {"type": "EMAIL", "email": email, "password": password}),
-        ("deviceInfo", device_info),
-    ])
-    b_p1 = json.dumps(p1, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    h1 = HEADERS_BASE.copy()
-    h1["x-fstr-application-key"] = APP_KEY
-    h1["x-fstr-signature"] = compute_signature("POST", "/v1/auth/sessions", b_p1)
-    r1 = await session.post(ACCOUNT_URL + "/v1/auth/sessions", data=b_p1, headers=h1, timeout=20)
-    if r1.status_code != 200:
-        print(f"[-] auth/sessions gagal: {r1.status_code} {r1.text[:200]}")
-        return None
-    auth_token = r1.json().get("authToken")
-    await asyncio.sleep(random.uniform(0.1, 0.3))
-
-    p2 = OrderedDict([("authToken", auth_token), ("deviceInfo", device_info)])
-    b_p2 = json.dumps(p2, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    h2 = HEADERS_BASE.copy()
-    h2["x-fstr-application-key"] = APP_KEY
-    h2["x-fstr-signature"] = compute_signature("POST", "/v1/users/sessions", b_p2)
-    r2 = await session.post(ACCOUNT_URL + "/v1/users/sessions", data=b_p2, headers=h2, timeout=20)
-    user_jwt = r2.json().get("userToken")
-    if not user_jwt:
-        print(f"[-] users/sessions gagal: {r2.status_code} {r2.text[:200]}")
-        return None
-    return user_jwt
-
-
-# Kandidat endpoint pencarian user (tebakan terarah dari keluarga API gsn-*).
-# Kalau ada yang 200 + berisi data user, itulah endpoint-nya.
-CANDIDATES = [
-    "https://gsn-follow.aftvrsys.com/api/v1/users/search?query={name}",
-    "https://gsn-follow.aftvrsys.com/api/v1/users/search?name={name}",
-    "https://gsn-follow.aftvrsys.com/api/v1/search/users?query={name}",
-    "https://gsn-follow.aftvrsys.com/api/v1/follow/search?query={name}",
-    "https://gsn-posts.aftvrsys.com/api/v1/users/search?query={name}",
-    "https://gsn-timelines.aftvrsys.com/api/v1/users/search?query={name}",
-    "https://gsn-images.aftvrsys.com/api/v1/users/search?query={name}",
-]
-
-
-async def fetch_one_bot(session_http):
-    """Ambil 1 bot dari stok via RPC yang sama seperti script follow.
-    Target dummy dipakai karena lookup belum punya UUID target
-    (UUID-lah yang sedang dicari); RPC ini hanya filter read-only,
-    jadi bot yang diambil tetap segar untuk follow."""
-    endpoint = f"{SUPABASE_URL}/rest/v1/rpc/get_fresh_bots"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {"p_target_uuid": "00000000-0000-0000-0000-000000000000", "p_limit": 1}
-    try:
-        r = await session_http.post(endpoint, json=payload, headers=headers, timeout=20)
-        if r.status_code == 200 and r.json():
-            return r.json()[0]
-        return None
-    except Exception as e:
-        print(f"[-] Gagal mengambil bot dari database: {e}")
-        return None
-
-
-async def main():
-    name = os.getenv("SEARCH_NAME", "")
-    if not SUPABASE_URL or not SUPABASE_KEY or not name:
-        print("[!] Env belum lengkap: SUPABASE_URL, SUPABASE_SERVICE_KEY, "
-              "SEARCH_NAME wajib diisi.")
-        sys.exit(1)
-    if not APP_KEY or not APP_SECRET:
-        print("[!] Env FSTR_APP_KEY / FSTR_APP_SECRET wajib diisi "
-              "(salin dari script panel).")
-        sys.exit(1)
-
-    async with AsyncSession(impersonate="chrome110", verify=False) as session:
-        bot = await fetch_one_bot(session)
-        if not bot:
-            print("[-] Tidak ada bot tersedia di stok untuk login lookup.")
-            return
-        print(f"[*] Pakai bot stok untuk login lookup: {bot['email']}")
-        jwt = await login_and_get_jwt(bot["email"], bot["password"], bot["device_id"], session)
-        if not jwt:
-            print("[-] Login gagal, probe dihentikan.")
-            return
-        print("[+] Login OK, JWT didapat. Mulai probe...")
-
-        headers = HEADERS_BASE.copy()
-        headers["Authorization"] = f"Bearer {jwt}"
-        for url_tpl in CANDIDATES:
-            url = url_tpl.format(name=name)
-            try:
-                r = await session.get(url, headers=headers, timeout=15)
-                body = r.text[:300].replace("\n", " ")
-                print(f"[{r.status_code}] {url} -> {body}")
-            except Exception as e:
-                print(f"[ERR] {url} -> {e}")
-
-    print("\n[*] Probe selesai. Laporkan baris status 200 (kalau ada) + "
-          "isi body-nya untuk langkah berikutnya.")
-
-
-if __name__ == "__main__":
-    if os.name == "nt":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(main())
