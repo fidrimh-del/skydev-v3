@@ -1,37 +1,7 @@
-"""UGC Friend Join Test — bot gabung ke server DesertEagle via AllocateToUserIdRequest (join teman) + BURST INIT + SPAM magic_potion + activity/get BERULANG.
-
-Perbedaan dari v4: v4 mematahkan timer tutup (survive 90,40 dtk,
-run 40671390203) tapi server tetap tidak menjawab activity/get.
-Teori v5: activity/get bot terlalu dini (klien game kirim sesudah
-~115-213 frame traffic room; bot kirim di ~2 dtk, mungkin sebelum
-mechanic UGC server siap sehingga request dibuang). v5 = v4 + SETTLE
-5 dtk terima traffic room dulu, lalu activity/get + ulang tiap 5 dtk
-selama observasi 30 dtk, plus ringkasan nama frame dari server.
-
-Urutan burst (byte persis dari TBLog_0_u4jk.txt, baris 2461-2498):
-  slot_interaction (58B, bawa UUID pemain -> dipakai UUID BOT dari frame
-    tbugv, BUKAN UUID pemilik log) -> preset x8 (14B) -> fetch_events
-  (14B) -> init_pos (10B) -> init_day_night (16B) -> pet (7B) ->
-  slot_interaction lagi -> outfit (8B) -> vhc (7B) -> STRKS (7B) ->
-  pet lagi -> activity/get (14B).
-magic_potion SENGAJA tidak ikut (spam aksi pemain, bukan sinyal entry;
-jadi variabel berikutnya bila v3 gagal).
-
-Alur:
-  1. Login FSTR + alokasi NORMAL (baseline + datacenterId).
-  2. Alokasi ACTIVITY -> server activity.
-  3. TCP connect -> event login -> auto-join (tbugv); tangkap UUID bot
-     dari frame tbugv; fallback JoinRoom hanya kalau auto-join gagal.
-  4. Kirim Analytics x2, lalu burst init, lalu activity/get.
-  5. Baca balasan get-activity (maks ~25 dtk), catat survival (waktu
-     dari login sampai tutup; zona maut v1/v2/diag = ~4,5 dtk).
-  6. Bila masih hidup, tinggal di room 60 detik (pong jalan).
-
-Kriteria sukses menurut pemilik: history join UGC target 6 -> 7.
-Exit 0 hanya bila balasan "get-activity" diterima DAN activityId target
-ditemukan di payload; selain itu exit 1.
-Token/JWT TIDAK PERNAH dicetak ke log.
+"""Assistant Bot — bot gabung ke server DesertEagle (teman) via AllocateToUserId + join PASIF, lalu STAY 120 detik online dan diskonek.
+BUKAN UGC: tidak ada activity/get. Tujuannya satu: apakah wujud PKXDSHOP terlihat di dunia Bartes selama 120 detik itu.
 """
+
 
 import asyncio
 import json
@@ -308,7 +278,7 @@ def find_joined_in(frames):
 
 
 async def main():
-    """DIAG3: join PASIF ke server activity (TANPA Analytics/potion sebelum
+    """ASISTEN: join PASIF ke server activity (TANPA Analytics/potion sebelum
     room — hipotesis: kiriman dini v5.1 menekan room assignment di tier ini).
     Tunggu JoinedRoom s.d. 25 dtk (top-level + dalam Batch), lalu bila
     join: burst + settle + activity/get x6 seperti v9. TIDAK butuh Bartes
@@ -329,17 +299,17 @@ async def main():
             data=json.dumps(body_friend, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
             headers=LU.HEADERS_BASE.copy(), timeout=20)
         act = r.json()
-        print(f"[*] DIAG3 alokasi teman: {r.status_code} successful={act.get('successful')} "
+        print(f"[*] ASISTEN alokasi teman: {r.status_code} successful={act.get('successful')} "
               f"type={act.get('gameServerType')}")
         host, port = LU.find_host_port(act)
-        print(f"[*] DIAG3 server: {host}:{port} ({act.get('gameServerId')})")
+        print(f"[*] ASISTEN server: {host}:{port} ({act.get('gameServerId')})")
 
     s, pid, conn_frames = tcp_connect_fast(host, port)
     if s is None:
         print("HASIL: GAGAL konek TCP.")
         return 1
     s.sendall(LU.build_login_frame(user_jwt))
-    print("[+] DIAG3 login terkirim (TANPA kiriman apa pun sesudahnya).")
+    print("[+] ASISTEN login terkirim (TANPA kiriman apa pun sesudahnya).")
     room, method, bot_uuid, t_join = None, None, None, None
     t0 = time.time()
     for _ in range(25):
@@ -355,7 +325,7 @@ async def main():
             break
         if closed:
             break
-    print(f"[*] DIAG3 join pasif: room={room} metode={method} "
+    print(f"[*] ASISTEN join pasif: room={room} metode={method} "
           f"waktu={t_join if t_join is not None else '-'} dtk, "
           f"UUID bot={'terbaca' if bot_uuid else 'TIDAK'}, closed={closed}")
     if room is None:
@@ -363,7 +333,7 @@ async def main():
             s.close()
         except Exception:
             pass
-        print("HASIL: DIAG3 join pasif GAGAL (tidak ada JoinedRoom 25 dtk).")
+        print("HASIL: ASISTEN join pasif GAGAL (tidak ada JoinedRoom 25 dtk).")
         return 1
 
     # Sudah di room: burst + settle + activity/get seperti v9.
@@ -391,9 +361,9 @@ async def main():
     try:
         for fr in burst:
             s.sendall(fr)
-        print(f"[+] DIAG3 burst terkirim ({len(burst)} frame).")
+        print(f"[+] ASISTEN burst terkirim ({len(burst)} frame).")
     except Exception as e:
-        print(f"[-] DIAG3 burst gagal: {e}")
+        print(f"[-] ASISTEN burst gagal: {e}")
     all_frames = []
     for _ in range(5):
         resp, closed, _ = LU.read_frames(s, 1)
@@ -402,46 +372,31 @@ async def main():
             s.sendall(potion)
         except Exception:
             break
-    print(f"[*] DIAG3 settle: {len(all_frames)} frame, closed={closed}")
-    got, gsize, error_count = False, 0, 0
-    for i in range(6):
+    print(f"[*] ASISTEN settle: {len(all_frames)} frame, closed={closed}")
+# ===== FASE STAY: 120 detik online di server Bartes, lalu diskonek =====
+    print("[*] ASISTEN stay 120 dtk (keepalive potion tiap putaran + auto-pong).")
+    t0 = time.time()
+    closed_early = None
+    while time.time() - t0 < 120:
+        resp, closed, _ = LU.read_frames(s, 5)
+        if closed:
+            closed_early = int(time.time() - t0)
+            print(f"[-] ASISTEN koneksi ditutup server lebih awal (detik ke-{closed_early}).")
+            break
         try:
-            s.sendall(LU.build_room_event_varint("activity/get", b""))
+            s.sendall(LU.build_room_event_varint("magic_potion", bytes.fromhex("080110ffffffffffffffffff01")))
         except Exception:
             break
-        print(f"[+] DIAG3 activity/get ke-{i + 1} terkirim.")
-        for _ in range(5):
-            resp, closed, _ = LU.read_frames(s, 1)
-            all_frames += resp
-            g, gs = find_get_activity(resp)
-            if g:
-                got, gsize = True, gs
-                break
-            for fr in resp:
-                if fr and fr[0] == 0x08:
-                    try:
-                        l = fr[1]
-                        if l < 0x80 and fr[2:2 + l] == b"get-activity-error":
-                            error_count += 1
-                    except Exception:
-                        pass
-            if closed:
-                break
-        if got or closed:
-            break
+        print(f"[*] ASISTEN online {int(time.time() - t0)} dtk, closed=False")
     try:
         s.close()
     except Exception:
         pass
-    if got:
-        blob = b"".join(all_frames)
-        found_id = ACTIVITY_ID_DEFAULT.encode("utf-8") in blob
-        print(f"[+] DIAG3 TERRAIN DITERIMA ({gsize}B), activityId di payload={found_id}.")
-        print("HASIL: DIAG3 JOIN PASIF + TERRAIN = HIPOTESIS KIRIMAN DINI TERBUKTI.")
-        return 0
-    print(f"[-] DIAG3 tanpa terrain (get-activity-error={error_count}x, closed={closed}).")
-    print("HASIL: DIAG3 join pasif berhasil tapi terrain tetap error.")
-    return 1
+    if closed_early is None:
+        print("HASIL: ASISTEN 120 dtk selesai -> BOT OFFLINE (diskonek sesuai rencana).")
+    else:
+        print(f"HASIL: ASISTEN offline lebih awal (detik ke-{closed_early}) -> BOT OFFLINE.")
+    return 0
 
 
 if __name__ == "__main__":
