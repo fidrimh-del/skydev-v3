@@ -1,4 +1,4 @@
-"""UGC Join Test v6 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
+"""UGC Join Test v7 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
 
 Perbedaan dari v4: v4 mematahkan timer tutup (survive 90,40 dtk,
 run 40671390203) tapi server tetap tidak menjawab activity/get.
@@ -158,6 +158,56 @@ def log_error_frame(fr):
         print(f"[!] ERROR-PAYLOAD ascii: {run.decode('ascii')}")
 
 
+async def login_android(email, password, device_id, session):
+    """Login FSTR + alokasi normal dengan device_info ANDROID (v7).
+    Salinan LU.login_and_allocate dengan platform Android; LU TIDAK diubah
+    (lookup_uuid.py produksi tetap DESKTOP)."""
+    device_info = {
+        "userAgent": "", "platform": "ANDROID", "system": "AndroidPlayer",
+        "systemVersion": "Android OS 13 / API-33",
+        "manufacturer": "Google", "deviceModel": "Pixel 7", "appVersion": LU.VERSION,
+        "sdkVersion": "", "vendorId": "", "advertisingId": "",
+        "pushToken": "", "cloudId": "", "carrierId": "",
+        "timezone": "SE Asia Standard Time", "language": "EN",
+        "country": "Unknown", "deviceId": device_id,
+    }
+    p1 = {"identityProvider": "FASTER",
+          "credentials": {"type": "EMAIL", "email": email, "password": password},
+          "deviceInfo": device_info}
+    b_p1 = json.dumps(p1, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    h1 = LU.HEADERS_BASE.copy()
+    h1["x-fstr-application-key"] = LU.APP_KEY
+    h1["x-fstr-signature"] = LU.compute_signature("POST", "/v1/auth/sessions", b_p1)
+    r1 = await session.post(LU.ACCOUNT_URL + "/v1/auth/sessions", data=b_p1, headers=h1, timeout=20)
+    if r1.status_code != 200:
+        print(f"[-] auth/sessions (Android) gagal: {r1.status_code}")
+        return None, None
+    auth_token = r1.json().get("authToken")
+    await asyncio.sleep(0.2)
+    p2 = {"authToken": auth_token, "deviceInfo": device_info}
+    b_p2 = json.dumps(p2, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    h2 = LU.HEADERS_BASE.copy()
+    h2["x-fstr-application-key"] = LU.APP_KEY
+    h2["x-fstr-signature"] = LU.compute_signature("POST", "/v1/users/sessions", b_p2)
+    r2 = await session.post(LU.ACCOUNT_URL + "/v1/users/sessions", data=b_p2, headers=h2, timeout=20)
+    user_jwt = r2.json().get("userToken")
+    if not user_jwt:
+        print("[-] users/sessions (Android) tidak mengembalikan userToken")
+        return None, None
+    print("[+] Login Android OK, JWT didapat.")
+    await asyncio.sleep(0.2)
+    p3 = {"userToken": user_jwt, "gameServerProtocolVersion": LU.GAME_PROTOCOL, "isPrivate": False}
+    b_p3 = json.dumps(p3, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    r3 = await session.post(LU.LOBBY_URL + "/lobby/allocation", data=b_p3,
+                            headers=LU.HEADERS_BASE.copy(), timeout=20)
+    print(f"[*] allocation status: {r3.status_code}")
+    try:
+        body = r3.json()
+    except Exception:
+        body = {}
+    return user_jwt, body
+
+
 def warm_up(user_jwt, alloc, bot):
     """Pemanasan sesi (v6): masuk room NORMAL dulu dengan JWT yang sama,
     seperti klien game yang selalu sudah online sebelum masuk UGC.
@@ -211,9 +261,9 @@ def warm_up(user_jwt, alloc, bot):
 async def main():
     activity_id = sys.argv[1] if len(sys.argv) > 1 else ACTIVITY_ID_DEFAULT
     bot = LU.probe_bot()
-    print(f"[*] Target activity: {activity_id} (v6: pemanasan sesi + baca payload get-activity-error)")
+    print(f"[*] Target activity: {activity_id} (v7: device Android + pemanasan sesi + baca payload get-activity-error)")
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
-        user_jwt, alloc = await LU.login_and_allocate(
+        user_jwt, alloc = await login_android(
             bot["email"], bot["password"], bot["device_id"], session)
         if not alloc:
             print("HASIL: GAGAL login/alokasi normal.")
@@ -470,7 +520,7 @@ async def main():
     survival = (t_close - t0) if t_close is not None else (time.time() - t0)
     print(f"[*] Selesai tinggal: {frames_stay} frame selama stay, "
           f"koneksi_tertutup_akhir={closed}, survival={survival:.2f} dtk.")
-    print(f"[*] v6: pemanasan={'YA' if warm_ok else 'TIDAK'}, "
+    print(f"[*] v7: platform=ANDROID, pemanasan={'YA' if warm_ok else 'TIDAK'}, "
           f"room_activity={room}, get-activity={got}, error={error_count}x.")
     if got and found_id:
         print("HASIL: BOT SAMPAI DI ROOM + TERRAIN TARGET DITERIMA "
