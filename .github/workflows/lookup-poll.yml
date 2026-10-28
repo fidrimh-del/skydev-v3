@@ -1,0 +1,63 @@
+# Poller UUID pesanan pkxd.shop (lihat lookup_poll.py + lookup_uuid.py).
+# Dijalankan dari repo panel skydev-v3 (runner yang sama dengan
+# script panel), bukan dari repo website.
+#
+# Tiap 10 menit: ambil pesanan uuid_status='pending' dari database
+# TOKO, lookup UUID pemainnya lewat jalur ToxicBird yang sudah
+# terbukti, tulis player_uuid + uuid_status ke tabel orders.
+# Pelanggan melihat UUID di info pesanannya; admin melihat UUID +
+# status lookup di detail pesanan.
+#
+# PENTING — Secrets repo ini (skydev-v3):
+#   SUPABASE_URL / SUPABASE_SERVICE_KEY yang SUDAH ADA di repo ini
+#   adalah database PANEL (stok bot), BUKAN database toko.
+#   Poller ini memakai nama Secrets BERBEDA agar tidak salah DB:
+#     SHOP_SUPABASE_URL, SHOP_SUPABASE_SERVICE_KEY
+#   (isi dengan URL + service key proyek Supabase TOKO / PKXDSHOP).
+#   Workflow memetakan keduanya ke env SUPABASE_URL /
+#   SUPABASE_SERVICE_KEY untuk poller, jadi kode poller tidak berubah.
+#   (PROBE_*/FSTR_* diteruskan kalau ada sebagai Secrets; kalau
+#   tidak ada, script memakai nilai di lookup_uuid.py atas perintah
+#   pemilik — hapus nilai hardcode saat produksi.)
+#
+# Jadwal GitHub Actions hanya berjalan dari branch default (main).
+# Manual dispatch (Run workflow) bisa dipakai kapan saja untuk tes.
+#
+# CATATAN: workflow ini TIDAK men-deploy website.
+
+name: Lookup UUID Poller
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install curl_cffi urllib3
+
+      - name: Run poller
+        env:
+          SUPABASE_URL: ${{ secrets.SHOP_SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SHOP_SUPABASE_SERVICE_KEY }}
+          PROBE_EMAIL: ${{ secrets.PROBE_EMAIL }}
+          PROBE_PASSWORD: ${{ secrets.PROBE_PASSWORD }}
+          PROBE_DEVICE_ID: ${{ secrets.PROBE_DEVICE_ID }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+        run: python -u lookup_poll.py
