@@ -1,4 +1,4 @@
-"""UGC Join Test v5 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
+"""UGC Join Test v5.1 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
 
 Perbedaan dari v4: v4 mematahkan timer tutup (survive 90,40 dtk,
 run 40671390203) tapi server tetap tidak menjawab activity/get.
@@ -113,7 +113,7 @@ def summarize(frames):
 async def main():
     activity_id = sys.argv[1] if len(sys.argv) > 1 else ACTIVITY_ID_DEFAULT
     bot = LU.probe_bot()
-    print(f"[*] Target activity: {activity_id} (v5: settle + activity/get berulang + spam magic_potion)")
+    print(f"[*] Target activity: {activity_id} (v5.1: potion sejak join + settle + activity/get berulang)")
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
         user_jwt, alloc = await LU.login_and_allocate(
             bot["email"], bot["password"], bot["device_id"], session)
@@ -151,6 +151,7 @@ async def main():
         return 1
     t0 = time.time()
     t_close = None
+    potion = frame_raw(MAGIC_POTION_HEX)  # dipakai sejak jendela join
     try:
         s.sendall(LU.build_login_frame(user_jwt))
         print("[+] Event login terkirim.")
@@ -160,9 +161,14 @@ async def main():
         print("HASIL: GAGAL kirim login.")
         return 1
 
-    # Baca bertahap sampai tbugv terlihat (maks ~8 dtk); tangkap UUID bot.
+    # Baca bertahap sampai tbugv+room (maks ~12 dtk); tangkap UUID bot.
+    # v5.1: seperti klien game, Analytics + potion dikirim LANGSUNG sesudah
+    # tbugv terlihat, TANPA menunggu room sync — run v5 mati di jendela
+    # join (timer 4,5 dtk) karena bot tidak mengirim apa-apa selagi menunggu
+    # room sync yang lambat.
     tbugv, room, closed, bot_uuid = False, None, False, None
-    for _ in range(8):
+    analytics_sent = False
+    for _ in range(12):
         resp, closed, _ = LU.read_frames(s, 1)
         tb, rm = LU.scan_login_window(resp)
         tbugv = tbugv or tb
@@ -172,6 +178,26 @@ async def main():
             u = uuid_from_tbugv(fr)
             if u:
                 bot_uuid = u
+        if tbugv and not analytics_sent:
+            try:
+                s.sendall(LU.build_room_event_varint(
+                    "Analytics/sessionId", str(uuid.uuid4()).encode()))
+                s.sendall(LU.build_room_event_varint(
+                    "Analytics/deviceId",
+                    str(uuid.uuid5(uuid.NAMESPACE_DNS, bot["email"])).encode()))
+                for _ in range(3):
+                    s.sendall(potion)
+                analytics_sent = True
+                print("[+] Analytics + POTION awal terkirim (sesudah tbugv).")
+            except Exception:
+                closed = True
+                break
+        elif analytics_sent and not closed:
+            try:
+                s.sendall(potion)
+            except Exception:
+                closed = True
+                break
         if tbugv and room is not None:
             break
         if closed:
@@ -191,18 +217,18 @@ async def main():
         s.close()
         return 1
 
-    # Analytics (seperti klien game + kontrol normal), lalu burst init.
-    try:
-        s.sendall(LU.build_room_event_varint(
-            "Analytics/sessionId", str(uuid.uuid4()).encode()))
-        s.sendall(LU.build_room_event_varint(
-            "Analytics/deviceId",
-            str(uuid.uuid5(uuid.NAMESPACE_DNS, bot["email"])).encode()))
-        print("[+] Analytics sessionId+deviceId terkirim.")
-    except Exception as e:
-        print(f"[-] Gagal kirim Analytics: {e}")
+    # Analytics pasca-join hanya bila belum terkirim di jendela join.
+    if not analytics_sent:
+        try:
+            s.sendall(LU.build_room_event_varint(
+                "Analytics/sessionId", str(uuid.uuid4()).encode()))
+            s.sendall(LU.build_room_event_varint(
+                "Analytics/deviceId",
+                str(uuid.uuid5(uuid.NAMESPACE_DNS, bot["email"])).encode()))
+            print("[+] Analytics sessionId+deviceId terkirim.")
+        except Exception as e:
+            print(f"[-] Gagal kirim Analytics: {e}")
 
-    potion = frame_raw(MAGIC_POTION_HEX)
     burst = []
     if bot_uuid:
         slot = LU.build_room_event_varint(
