@@ -341,13 +341,15 @@ async def main():
         return 1
 
     # Sudah di room: burst + settle.
+    # sessionId/deviceId dipakai bersama di burst TCP dan login UDP (klien asli sama).
+    session_id = str(uuid.uuid4())
+    device_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, bot["email"]))
     potion = frame_raw(MAGIC_POTION_HEX)
     try:
         s.sendall(LU.build_room_event_varint(
-            "Analytics/sessionId", str(uuid.uuid4()).encode()))
+            "Analytics/sessionId", session_id.encode()))
         s.sendall(LU.build_room_event_varint(
-            "Analytics/deviceId",
-            str(uuid.uuid5(uuid.NAMESPACE_DNS, bot["email"])).encode()))
+            "Analytics/deviceId", device_id.encode()))
         for _ in range(5):
             s.sendall(potion)
     except Exception:
@@ -392,6 +394,18 @@ async def main():
             u.settimeout(0.2)
             u.connect((host, int(udp_port)))
             print(f"[+] ASISTEN UDP connected {host}:{udp_port}")
+        # INIT UDP (bukti log pre-login v60): Connect 0x03 + login JWT
+        # (frame sama persis dengan login TCP) + Analytics — TANPA ini
+        # server menutup sesi saat paket posisi datang (tes v2).
+        try:
+            u.send(struct.pack(">I", 1) + b"\x03")
+            u.send(LU.build_login_frame(user_jwt))
+            u.send(LU.build_room_event_varint("Analytics/sessionId", session_id.encode()))
+            u.send(LU.build_room_event_varint("Analytics/deviceId", device_id.encode()))
+            print("[+] ASISTEN UDP init terkirim (Connect + login + Analytics).")
+        except Exception as e:
+            print(f"[-] ASISTEN UDP init gagal: {e}")
+            u = None
         except Exception as e:
             print(f"[-] ASISTEN UDP connect gagal: {e}")
             u = None
@@ -426,6 +440,11 @@ async def main():
                     while True:
                         data, _ = u.recvfrom(65535)
                         udp_in_total += 1
+                        if data == bytes.fromhex("0000000101"):
+                            try:
+                                u.send(bytes.fromhex("0000000102"))
+                            except Exception:
+                                pass
                         if len(udp_in) < 50:
                             udp_in.append(data.hex())
                 except socket.timeout:
