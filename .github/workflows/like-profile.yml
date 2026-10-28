@@ -1,0 +1,43 @@
+# SKYDEV Like Profil (Cloud) — kirim like profil PK XD via TCP, paralel.
+# Dipanggil dari dashboard panel (kartu "Like profil", tab Like) lewat
+# executeAndWait yang sudah ada, atau dispatch manual dari GitHub.
+# Input target boleh UUID langsung atau Nama#Kode (worker mencari
+# UUID-nya dulu lewat satu sesi lookup sebelum worker paralel jalan).
+# Log run INI yang menjadi bukti terkirim (blok HASIL) — sengaja TIDAK
+# ada langkah hapus log seperti workflow like postingan, karena angka
+# terkirim harus bisa dicek ulang dari log Actions.
+# Prasyarat: Secrets skydev-v3 SUPABASE_URL + SUPABASE_SERVICE_KEY
+# (DB PANEL) + FSTR_APP_KEY/FSTR_APP_SECRET (boleh kosong -> fallback
+# di lookup_uuid.py). Tabel histori profile_like_history opsional:
+# tanpa tabel, worker tetap jalan (fallback IsThere per bot).
+name: SKYDEV Like Profil (Cloud)
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target: UUID atau Nama#Kode"
+        required: true
+      jumlah:
+        description: "Jumlah like baru yang diminta"
+        required: true
+        default: "10"
+      max_paralel:
+        description: "Worker bersamaan (maks 20)"
+        required: false
+        default: "20"
+jobs:
+  like_profil:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u like_profile_cloud.py "${{ inputs.target }}" "${{ inputs.jumlah }}" "${{ inputs.max_paralel }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
