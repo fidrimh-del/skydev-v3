@@ -1,0 +1,23 @@
+# Join-Window Diagnostic — rekam semua frame jendela join activity room.
+# Menjawab: apakah room sync (0x06) benar-benar tidak dikirim server, atau
+# dikirim tapi formatnya tidak dikenali scan_login_window?
+# Log run SENGAJA tidak dihapus (bukti diagnostik).
+name: UGC Join Window Diagnostic
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u ugc_joinwin_diag.py
+        env:
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PROBE_EMAIL: ${{ secrets.PROBE_EMAIL }}
+          PROBE_PASSWORD: ${{ secrets.PROBE_PASSWORD }}
