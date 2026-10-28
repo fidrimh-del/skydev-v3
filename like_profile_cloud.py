@@ -31,9 +31,10 @@ ATURAN KERAS (jangan dilanggar):
     bot yang sama tidak menambah hitungan — jadi pengulangan tugas
     karena gagal tidak akan menggandakan like.
 
-REPLENISHMENT (v3): selama terkirim < jumlah dan masih ada bot
-  fresh, fetch ulang dengan limit membesar (deficit + 30) dan
-  jalankan bot fresh berikutnya (maks 4 ronde fetch); terakhir,
+REPLENISHMENT (v3.1): selama terkirim < jumlah dan masih ada bot
+  fresh, fetch ulang dengan limit membesar (deficit + 30, plafon
+  fetch 5000 bot) dan jalankan bot fresh berikutnya (maks 4 ronde
+  fetch); terakhir,
   bot yang gagal dicoba ulang sekali. Jaminan: MINIMAL jumlah
   bila stok bot cukup — bukan persis jumlah (overshoot wave
   paralel tetap berlaku; kelebihan itu bonus, bukan kerugian).
@@ -128,7 +129,7 @@ def fresh_bots(pool, tried, history):
 
 def next_limit(limit, deficit):
     """Limit fetch ronde berikutnya: membesar sejumlah deficit + cadangan."""
-    return min(limit + deficit + 30, 1000)
+    return min(limit + deficit + 30, 5000)
 
 
 # ---------------------------------------------------------------- Supabase panel
@@ -230,7 +231,7 @@ def run_bot(idx, bot, target_uuid, state):
             state["failed_map"][bot["email"]] = bot
     print(f"[*] Bot {idx}: {hasil} ({dt:.0f} detik) | "
           f"terkirim={state['sent']} dilewati={state['skipped']} "
-          f"gagal={state['failed']}")
+          f"gagal={len(state['failed_map'])}")
     return hasil
 
 
@@ -286,7 +287,7 @@ def main():
         target_uuid = hit["uuid"]
 
     # 3. Ronde 1: daftar bot resmi (limit = jumlah + cadangan).
-    limit = min(jumlah + 30, 500)
+    limit = min(jumlah + 30, 5000)
     pool = P.get_bots(target_uuid, limit=limit)
     if not pool:
         print("[!] Tidak ada bot untuk target ini — berhenti.")
