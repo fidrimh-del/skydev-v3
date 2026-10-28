@@ -1,0 +1,277 @@
+"""like_profile_cloud.py — Kirim like profil PK XD massal via TCP (produksi).
+
+Mesin yang dipakai (semuanya sudah TERBUKTI live, bukan tebakan):
+  - Login/TCP/FrameReader/builder/decode: lookup_uuid.py + v2
+    (sudah terbukti di probe run 1-5 + poller produksi).
+  - Like: RoomEvent "like" + CreateLikeRequest (EventId=0, LikedUser=UUID,
+    LikeType=1/Player); verifikasi andalan = IsThere-sesudah
+    (balasan create_like_result tidak pernah tiba — jangan ditunggu).
+
+CARA PAKAI:
+  python like_profile_cloud.py <TARGET> <JUMLAH> [MAX_PARALEL]
+    TARGET      UUID (36 karakter) atau Nama#Kode (dicari UUID-nya dulu
+                lewat satu sesi lookup sebelum worker jalan).
+    JUMLAH      jumlah like BARU yang diminta.
+    MAX_PARALEL jumlah worker bersamaan, default 20, dijepit 1..20.
+  Di GitHub Actions: pakai like-profile.yml (input target/jumlah/
+  max_paralel). Di dashboard panel: kartu "Like profil" (tab Like)
+  memanggil workflow itu lewat executeAndWait yang sudah ada.
+
+ATURAN KERAS (jangan dilanggar):
+  - Create dikirim SEKALI per bot (aksi tulis; 2x berisiko +2).
+  - Satu bot dipakai tepat satu tugas (tidak ada dua thread memakai
+    bot yang sama; tidak ada pasangan (bot, target) yang dikirim 2x
+    dalam satu job).
+  - Bot yang sudah pernah like target DILEWATI: dulu lewat histori
+    Supabase (satu query massal, tanpa sesi), sisanya lewat
+    IsThere-sebelum di dalam like_once (pemanasan + catat histori).
+  - Histori HANYA ditulis sesudah IsThere-sesudah = True.
+  - Kredensial TIDAK PERNAH dicetak ke log (hanya indeks bot).
+  - Server menduplikasi per pasangan (bot, target): like kedua dari
+    bot yang sama tidak menambah hitungan — jadi pengulangan tugas
+    karena gagal tidak akan menggandakan like.
+
+KELUAR (exit code):
+  - 0 = terkirim >= jumlah yang diminta.
+  - 1 = terkirim < jumlah (kurang bot, gagal semua, atau target
+    tidak ditemukan). Rincian pasti selalu tercetak di blok HASIL
+    (terkirim / diminta / dilewati-sudah-like / gagal).
+
+CATATAN JUJUR TENTANG WAKTU:
+  - Waktu KERJA script: ~15 detik per like baru (satu worker);
+    dengan 20 worker paralel, 100 like ≈ 100/20 x 15 detik ≈ 75 detik
+    + overhead login (bukan 100 x 15 detik).
+  - Counter profil di game MUNCUL TERTUNDA 9-18 menit (agregasi sisi
+    server game, teramati 2026-10-28) — TIDAK bisa dipercepat dari
+    klien. Jangan menilai job dari counter instan; nilailah dari
+    blok HASIL (IsThere-sesudah) + log Actions.
+"""
+
+import asyncio
+import json
+import os
+import random
+import re
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+import lookup_uuid as L
+import like_profile_probe as P
+
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE)
+
+
+# ---------------------------------------------------------------- fungsi murni
+def is_uuid(s):
+    return bool(UUID_RE.match((s or "").strip()))
+
+
+def clamp_paralel(n, default=20):
+    try:
+        v = int(n)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(20, v))
+
+
+def parse_args(argv):
+    """argv[1] = target, argv[2] = jumlah, argv[3] = max_paralel (opsional).
+    Kembalikan (target, jumlah, max_paralel) atau None kalau tidak sah."""
+    if len(argv) < 3:
+        return None
+    target = argv[1].strip()
+    try:
+        jumlah = int(argv[2])
+    except ValueError:
+        return None
+    if not target or jumlah < 1:
+        return None
+    max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 20)
+    return target, jumlah, max_paralel
+
+
+def decide_exit(sent, jumlah):
+    """0 = target terpenuhi, 1 = kurang (apa pun sebabnya)."""
+    return 0 if sent >= jumlah else 1
+
+
+# ---------------------------------------------------------------- Supabase panel
+def _supabase():
+    return (os.getenv("SUPABASE_URL", "").rstrip("/"),
+            os.getenv("SUPABASE_SERVICE_KEY", ""))
+
+
+def history_set(target_uuid):
+    """Satu query massal: {email bot yang sudah like target}.
+    None = tabel belum ada / error -> fallback IsThere per bot."""
+    url, key = _supabase()
+    if not url or not key:
+        return None
+    q = ("/rest/v1/profile_like_history?select=bot_email"
+         "&target_uuid=eq." + urllib.parse.quote(target_uuid, safe="")
+         + "&limit=5000")
+    req = urllib.request.Request(url + q, headers={
+        "apikey": key, "Authorization": "Bearer " + key}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            rows = json.loads(r.read().decode("utf-8"))
+        return {row["bot_email"] for row in rows if row.get("bot_email")}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print("[!] Tabel profile_like_history BELUM ADA -> "
+                  "jalan tanpa histori (fallback IsThere).")
+        else:
+            print(f"[!] history_set HTTP {e.code} -> fallback IsThere.")
+        return None
+    except Exception as e:
+        print(f"[!] history_set gagal ({e}) -> fallback IsThere.")
+        return None
+
+
+# ---------------------------------------------------------------- resolusi nama
+async def resolve_name(name, bot):
+    """Nama#Kode -> dict lookup (uuid, name) atau None. Satu sesi
+    lookup per percobaan, maks 3 percobaan (bot bergantian)."""
+    async with L.AsyncSession(impersonate="chrome110",
+                              verify=False) as session:
+        for attempt in range(1, 4):
+            print(f"[*] Resolusi {name} (percobaan {attempt}) ...")
+            hit = await L.lookup_once(session, bot, name)
+            if hit and hit.get("uuid"):
+                print(f"[+] {name} -> {hit['uuid']} "
+                      f"(kanonis: {hit.get('name')})")
+                return hit
+    return None
+
+
+# ---------------------------------------------------------------- worker per bot
+async def bot_coro(bot, target_uuid):
+    """Satu bot: maks 2 instance. Kembalikan 'sent' / 'already' / 'fail'."""
+    async with L.AsyncSession(impersonate="chrome110",
+                              verify=False) as session:
+        for attempt in range(1, 3):
+            res = await P.like_once(session, bot, target_uuid)
+            if res is None:
+                continue  # instance gagal -> alokasi ulang
+            if res.get("already"):
+                return "already"
+            after = res.get("after") or {}
+            if after.get("exists") is True:
+                return "sent"
+            # Create tidak terbukti di instance ini -> coba instance baru
+            # (aman: server menduplikasi per pasangan, tidak mengganda).
+    return "fail"
+
+
+def run_bot(idx, bot, target_uuid, state):
+    """Satu tugas worker (dijalankan di thread pool). Menghormati
+    target: kalau jumlah sudah terpenuhi, langsung lewati."""
+    with state["lock"]:
+        if state["sent"] >= state["jumlah"]:
+            return "skip-target-met"
+    time.sleep(random.uniform(0, 1))  # stagger login (hindari herd)
+    t0 = time.time()
+    try:
+        hasil = asyncio.run(bot_coro(bot, target_uuid))
+    except Exception as e:
+        hasil = "fail"
+        print(f"[!] Bot {idx}: exception {e}")
+    dt = time.time() - t0
+    with state["lock"]:
+        if hasil == "sent":
+            state["sent"] += 1
+        elif hasil == "already":
+            state["skipped"] += 1
+        else:
+            state["failed"] += 1
+    print(f"[*] Bot {idx}: {hasil} ({dt:.0f} detik) | "
+          f"terkirim={state['sent']} dilewati={state['skipped']} "
+          f"gagal={state['failed']}")
+    return hasil
+
+
+# ---------------------------------------------------------------- main
+def main():
+    parsed = parse_args(sys.argv)
+    if parsed is None:
+        print("Pakai: python like_profile_cloud.py <TARGET> <JUMLAH> "
+              "[MAX_PARALEL]")
+        print("  TARGET = UUID atau Nama#Kode; JUMLAH >= 1; "
+              "MAX_PARALEL dijepit 1..20 (default 20).")
+        return 1
+    target_in, jumlah, max_paralel = parsed
+    t0 = time.time()
+    print(f"[*] Like profil: target={target_in} jumlah={jumlah} "
+          f"paralel_maks={max_paralel}")
+
+    # 1. Daftar bot awal (untuk resolusi bila perlu).
+    bots = P.get_bots(target_in, limit=10)
+    if not bots:
+        print("[!] Tidak ada bot — berhenti.")
+        return 1
+
+    # 2. Resolusi Nama#Kode -> UUID (lewati bila input sudah UUID).
+    if is_uuid(target_in):
+        target_uuid = target_in.strip()
+        print(f"[*] Target sudah UUID: {target_uuid}")
+    else:
+        hit = asyncio.run(resolve_name(target_in, bots[0]))
+        if not hit:
+            print(f"[!] Target {target_in} TIDAK DITEMUKAN — berhenti "
+                  "(tidak ada like dikirim).")
+            return 1
+        target_uuid = hit["uuid"]
+
+    # 3. Daftar bot resmi untuk UUID ini (limit = jumlah + cadangan).
+    bots = P.get_bots(target_uuid, limit=min(jumlah + 30, 500))
+    if not bots:
+        print("[!] Tidak ada bot untuk target ini — berhenti.")
+        return 1
+    print(f"[*] {len(bots)} bot tersedia untuk job ini.")
+
+    # 4. Filter histori massal (tanpa sesi).
+    sudah = history_set(target_uuid)
+    if sudah is None:
+        tugas = bots
+        print("[*] Histori tidak dipakai (fallback IsThere per bot).")
+    else:
+        tugas = [b for b in bots if b["email"] not in sudah]
+        print(f"[*] Histori: {len(sudah)} bot sudah like target ini "
+              f"-> dilewati tanpa sesi; {len(tugas)} bot tersisa.")
+
+    # 5. Jalan paralel (maks 20). Tugas yang antre dan mendapati target
+    #    sudah terpenuhi akan lewati sendiri (murah, tanpa sesi).
+    state = {"lock": threading.Lock(), "jumlah": jumlah,
+             "sent": 0, "skipped": 0, "failed": 0}
+    with ThreadPoolExecutor(max_workers=max_paralel) as pool:
+        futs = [pool.submit(run_bot, i + 1, bot, target_uuid, state)
+                for i, bot in enumerate(tugas)]
+        for f in futs:
+            try:
+                f.result()
+            except Exception as e:
+                print(f"[!] Tugas worker exception: {e}")
+
+    dt = time.time() - t0
+    sent, skipped, failed = state["sent"], state["skipped"], state["failed"]
+    print("=" * 48)
+    print(f"HASIL LIKE PROFIL: target {target_uuid}")
+    print(f"  Diminta: {jumlah} | Terkirim: {sent} | "
+          f"Dilewati (sudah like): {skipped} | Gagal: {failed}")
+    print(f"  Waktu total: {dt:.0f} detik")
+    print("=" * 48)
+    if sent < jumlah:
+        print(f"[!] Kurang {jumlah - sent} like dari target "
+              "(bot habis / gagal — cek log di atas).")
+    return decide_exit(sent, jumlah)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
