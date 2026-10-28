@@ -34,7 +34,8 @@ async def main():
             data=json.dumps(body).encode(), headers=LU.HEADERS_BASE.copy(), timeout=20)
         act = r.json()
         print(f"HASIL: alokasi teman {r.status_code} successful={act.get('successful')} "
-              f"type={act.get('gameServerType')}")
+              f"type={act.get('gameServerType')} "
+              f"alasan={act.get('failureReason') or act.get('failureDescription') or '-'}")
         host, port = LU.find_host_port(act)
         print(f"HASIL: server {host}:{port} ({act.get('gameServerId')})")
     s, pid, conn_frames = AB.tcp_connect_fast(host, port)
