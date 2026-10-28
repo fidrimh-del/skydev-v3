@@ -1,0 +1,23 @@
+# UGC Diagnostic NORMAL (kontrol) — bot diag yang sama ke room NORMAL.
+# Tujuan: membandingkan apakah tutup ~4,5 dtk juga terjadi di room normal
+# (berarti soal perilaku klien) atau hanya di activity room (spesifik activity).
+# Log run SENGAJA tidak dihapus (bukti diagnostik).
+name: UGC Diagnostic Normal
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u ugc_diag.py normal
+        env:
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PROBE_EMAIL: ${{ secrets.PROBE_EMAIL }}
+          PROBE_PASSWORD: ${{ secrets.PROBE_PASSWORD }}
