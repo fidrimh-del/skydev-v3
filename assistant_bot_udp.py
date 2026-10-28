@@ -394,18 +394,18 @@ async def main():
             u.settimeout(0.2)
             u.connect((host, int(udp_port)))
             print(f"[+] ASISTEN UDP connected {host}:{udp_port}")
-        # INIT UDP (bukti log pre-login v60): Connect 0x03 + login JWT
-        # (frame sama persis dengan login TCP) + Analytics — TANPA ini
-        # server menutup sesi saat paket posisi datang (tes v2).
-        try:
-            u.send(struct.pack(">I", 1) + b"\x03")
-            u.send(LU.build_login_frame(user_jwt))
-            u.send(LU.build_room_event_varint("Analytics/sessionId", session_id.encode()))
-            u.send(LU.build_room_event_varint("Analytics/deviceId", device_id.encode()))
-            print("[+] ASISTEN UDP init terkirim (Connect + login + Analytics).")
-        except Exception as e:
-            print(f"[-] ASISTEN UDP init gagal: {e}")
-            u = None
+            # INIT UDP (bukti log pre-login v60): Connect 0x03 + login JWT
+            # (frame sama persis dengan login TCP) + Analytics — TANPA ini
+            # server menutup sesi saat paket posisi datang (tes v2).
+            try:
+                u.send(struct.pack(">I", 1) + b"\x03")
+                u.send(LU.build_login_frame(user_jwt))
+                u.send(LU.build_room_event_varint("Analytics/sessionId", session_id.encode()))
+                u.send(LU.build_room_event_varint("Analytics/deviceId", device_id.encode()))
+                print("[+] ASISTEN UDP init terkirim (Connect + login + Analytics).")
+            except Exception as e:
+                print(f"[-] ASISTEN UDP init gagal: {e}")
+                u = None
         except Exception as e:
             print(f"[-] ASISTEN UDP connect gagal: {e}")
             u = None
