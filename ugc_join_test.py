@@ -1,4 +1,4 @@
-"""UGC Join Test v5.1 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
+"""UGC Join Test v5.2 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
 
 Perbedaan dari v4: v4 mematahkan timer tutup (survive 90,40 dtk,
 run 40671390203) tapi server tetap tidak menjawab activity/get.
@@ -110,10 +110,49 @@ def summarize(frames):
     return sorted(counts.items(), key=lambda kv: -kv[1])
 
 
+def tcp_connect_fast(host, port):
+    """Connect + kirim 0x03, baca sampai ack 0x03 (maks ~3 dtk).
+    Kembalikan (socket, player_id, frame_jendela_connect) atau
+    (None, None, []). TIDAK menunggu 6 dtk seperti LU.tcp_connect dan
+    TIDAK membuang frame jendela connect (diag join-window membuktikan
+    21-41 frame lewat di jendela itu)."""
+    import socket as _socket
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.connect((host, port))
+    except Exception as e:
+        print(f"[-] Gagal konek TCP: {e}")
+        return None, None, []
+    try:
+        s.sendall(struct.pack(">I", 1) + b"\x03")
+    except Exception as e:
+        print(f"[-] Gagal kirim Connect: {e}")
+        s.close()
+        return None, None, []
+    frames_all = []
+    pid = None
+    for _ in range(6):
+        resp, closed, _ = LU.read_frames(s, 0.5)
+        frames_all.extend(resp)
+        for p in resp:
+            if len(p) >= 5 and p[0] == 0x03:
+                pid = int.from_bytes(p[1:5], "big")
+        if pid is not None or closed:
+            break
+    if pid is not None:
+        print(f"[*] Jendela Connect cepat: {len(frames_all)} frame, "
+              f"playerId={pid}.")
+        return s, pid, frames_all
+    print("[-] Tidak ada frame Connected.")
+    s.close()
+    return None, None, []
+
+
 async def main():
     activity_id = sys.argv[1] if len(sys.argv) > 1 else ACTIVITY_ID_DEFAULT
     bot = LU.probe_bot()
-    print(f"[*] Target activity: {activity_id} (v5.1: potion sejak join + settle + activity/get berulang)")
+    print(f"[*] Target activity: {activity_id} (v5.2: login cepat + settle + activity/get berulang)")
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
         user_jwt, alloc = await LU.login_and_allocate(
             bot["email"], bot["password"], bot["device_id"], session)
@@ -145,10 +184,19 @@ async def main():
         gsid = act.get("gameServerId", "")
         print(f"[*] Server activity: {host}:{port} ({gsid})")
 
-    s, pid = LU.tcp_connect(host, port)
+    s, pid, conn_frames = tcp_connect_fast(host, port)
     if s is None:
         print("HASIL: GAGAL konek TCP ke server activity.")
         return 1
+    sync_di_connect = [fr for fr in conn_frames if fr and fr[0] == 0x06]
+    print(f"[*] 0x06 di jendela connect: {len(sync_di_connect)} frame "
+          f"(bila >0, room sync datang SEBELUM login dan selama ini dibuang "
+          f"LU.tcp_connect).")
+    if sync_di_connect:
+        for fr in sync_di_connect:
+            print(f"[*] 0x06 connect: p1={fr[1] if len(fr) > 1 else '?'}, "
+                  f"p[2:6]={fr[2:6].hex() if len(fr) >= 6 else '?'} "
+                  f"len={len(fr)}.")
     t0 = time.time()
     t_close = None
     potion = frame_raw(MAGIC_POTION_HEX)  # dipakai sejak jendela join
