@@ -89,7 +89,9 @@ async def main():
                 continue
             hit, err = None, None
             try:
-                for _ in range(2):
+                # 3 instance per order (fail-fast join membuat tiap
+                # instance murah; peluang kena instance sehat naik).
+                for _ in range(3):
                     hit = await lookup_once(session, bot, pkxd)
                     if hit:
                         break
