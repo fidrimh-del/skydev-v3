@@ -33,15 +33,18 @@ YANG TIDAK BERUBAH (aturan keras, jangan dilanggar):
   - Mesin login/TCP dipakai ulang dari lookup_uuid.py (terbukti);
     berkas itu TIDAK diubah v2 (dipakai juga poller produksi).
 
-CATATAN JUJUR TENTANG DELAY (pisahkan dua hal ini):
-  - Lag counter profil di game (9-18 menit, teramati 2026-10-28)
-    adalah agregasi SISI SERVER game — TIDAK bisa dipercepat dari
-    klien mana pun. Yang v2 percepat adalah waktu KERJA script
+CATATAN JUJUR TENTANG COUNTER (pisahkan dua hal ini):
+  - Counter profil di game adalah cache per sesi: angka tampil baru
+    diperbarui saat buka ulang game atau ganti server (koreksi
+    2026-10-28: BUKAN delay agregasi server; bukti: counter 418
+    persis = 399 + 1 + 18 sesudah buka ulang/ganti server, tanpa
+    tunggu). Yang v2 percepat adalah waktu KERJA script
     (50 detik -> ~15 detik per like baru; ~0,5 detik per pasangan
     yang sudah ada di histori).
-  - Untuk pesanan massal nanti, langkah berikutnya (BELUM dibangun,
-    perlu persetujuan): worker bot paralel (mis. 5 thread) — 100 like
-    dari ~80 menit berurutan menjadi ~5 menit. Bukan bagian v2 ini.
+  - Untuk pesanan massal nanti, langkah berikutnya (SUDAH dibangun:
+    like_profile_cloud.py, paralel maks 20) — 100 like dari
+    ~80 menit berurutan menjadi ~2 menit (terukur: 18 like dalam
+    86 detik termasuk resolusi). Bukan bagian v2 ini.
 
 CARA PAKAI: sama dengan v1 (argv UUID / env TARGET_UUID / workflow
 like-profile-probe.yml). DDL histori: profile-like-history.sql
