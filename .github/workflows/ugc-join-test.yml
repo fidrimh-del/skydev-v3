@@ -1,0 +1,29 @@
+# UGC Join Test — bot join ke UGC via alokasi activity (manual, sekali jalan).
+# Kriteria sukses (dari pemilik): history join UGC target 6 -> 7.
+# Bot: akun probe (fallback hardcode di lookup_uuid.py atas perintah pemilik,
+# repo private); Secrets FSTR_*/PROBE_* menang kalau ada.
+# Log run SENGAJA tidak dihapus (bukti join).
+name: UGC Join Test
+on:
+  workflow_dispatch:
+    inputs:
+      activity_id:
+        description: "ActivityId UGC target"
+        required: true
+        default: "3e7cec3f-1ae9-4ba2-a19b-a6339e0f9b23"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u ugc_join_test.py "${{ inputs.activity_id }}"
+        env:
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PROBE_EMAIL: ${{ secrets.PROBE_EMAIL }}
+          PROBE_PASSWORD: ${{ secrets.PROBE_PASSWORD }}
