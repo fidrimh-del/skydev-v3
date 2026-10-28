@@ -2,11 +2,14 @@
 # Dijalankan dari repo panel skydev-v3 (runner yang sama dengan
 # script panel), bukan dari repo website.
 #
-# Tiap 10 menit: ambil pesanan uuid_status='pending' dari database
-# TOKO, lookup UUID pemainnya lewat jalur ToxicBird yang sudah
-# terbukti, tulis player_uuid + uuid_status ke tabel orders.
-# Pelanggan melihat UUID di info pesanannya; admin melihat UUID +
-# status lookup di detail pesanan.
+# DUA JALUR PEMICU (keduanya menjalankan poller yang sama):
+# 1. REAL-TIME (utama): trigger database di tabel orders
+#    (trg_order_dispatch) memanggil GitHub repository_dispatch
+#    event 'new-order' begitu order baru dengan uuid_status='pending'
+#    tersimpan -> workflow jalan dalam ~1 menit, UUID muncul di detail
+#    sekitar 1-2 menit setelah order dibuat.
+# 2. CRON tiap 10 menit (jaring pengaman): mengambil order pending
+#    yang terlewat webhook (mis. dispatch gagal / PAT kedaluwarsa).
 #
 # PENTING — Secrets repo ini (skydev-v3):
 #   SUPABASE_URL / SUPABASE_SERVICE_KEY yang SUDAH ADA di repo ini
@@ -20,8 +23,12 @@
 #   tidak ada, script memakai nilai di lookup_uuid.py atas perintah
 #   pemilik — hapus nilai hardcode saat produksi.)
 #
-# Jadwal GitHub Actions hanya berjalan dari branch default (main).
-# Manual dispatch (Run workflow) bisa dipakai kapan saja untuk tes.
+# PRASYARAT REAL-TIME (sekali saja, di dashboard Supabase toko):
+#   Simpan token GitHub (classic, scope repo) ke Vault:
+#     select vault.create_secret('<TOKEN_GITHUB>', 'github_dispatch_pat');
+#   Token ini hanya dibaca fungsi trigger di database; tidak pernah
+#   keluar dari proyek Supabase. Tanpa secret ini, trigger diam saja
+#   dan cron tetap mengambil ordernya (tidak ada yang rusak).
 #
 # CATATAN: workflow ini TIDAK men-deploy website.
 
@@ -31,6 +38,8 @@ on:
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch:
+  repository_dispatch:
+    types: [new-order]
 
 permissions:
   contents: read
