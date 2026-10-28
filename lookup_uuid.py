@@ -428,7 +428,8 @@ def resolve_name(argv):
 
 async def lookup_once(session, bot, name):
     """Satu percobaan penuh (login s.d. search). Kembalikan dict
-    hasil decode atau None."""
+    hasil decode atau None. Pemanggil yang mengulang kalau perlu
+    (standalone main: 3x, poller: 2x per order)."""
     user_jwt, alloc = await login_and_allocate(
         bot["email"], bot["password"], bot["device_id"], session)
     if not alloc:
@@ -503,18 +504,23 @@ async def lookup_once(session, bot, name):
     return hit
 
 
+def probe_bot():
+    """Akun bot lookup. Env Secrets menang; fallback hardcode atas
+    perintah pemilik (repo private) — hapus nilai hardcode saat
+    produksi dan pindah ke Secrets. TIDAK dicetak ke log."""
+    return {
+        "email": os.getenv("PROBE_EMAIL", "") or "pkxdshop.id@gmail.com",
+        "password": os.getenv("PROBE_PASSWORD", "") or "Kontol@161",
+        "device_id": os.getenv("PROBE_DEVICE_ID", "") or "9f31c2d4-probe-device",
+    }
+
+
 async def main():
     name = resolve_name(sys.argv)
     if not name:
         print("[!] Nama pemain wajib diisi.")
         sys.exit(1)
-    # Akun bot pemilik (env Secrets menang; fallback hardcode atas
-    # perintah pemilik, hapus saat produksi). TIDAK dicetak ke log.
-    bot = {
-        "email": os.getenv("PROBE_EMAIL", "") or "pkxdshop.id@gmail.com",
-        "password": os.getenv("PROBE_PASSWORD", "") or "Kontol@161",
-        "device_id": os.getenv("PROBE_DEVICE_ID", "") or "9f31c2d4-probe-device",
-    }
+    bot = probe_bot()
     print(f"[*] Cari UUID untuk: {name}")
     t0 = time.time()
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
