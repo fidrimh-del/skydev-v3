@@ -1,12 +1,14 @@
-"""UGC Join Test v3 — bot masuk ke UGC via alokasi activity + BURST INIT.
+"""UGC Join Test v4 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion.
 
-Perbedaan dari v2: v2 mengirim activity/get saja dan koneksi ditutup
-~4,5 dtk tanpa balasan; kontrol room normal (diag normal, run 40669362748)
-membuktikan tutup itu SPESIFIK ACTIVITY ROOM (bot yang sama survive
-32,86 dtk di room normal). Dari TBLog klien game (masuk UGC random),
-sebelum activity/get klien mengirim rangkaian world-entry burst — bot v2
-tidak mengirim satu pun dari ini. v3 mereplikasi burst itu persis
-(urutan + byte dari TBLog), lalu activity/get.
+Perbedaan dari v3: v3 mengirim burst init lengkap dan koneksi TETAP
+ditutup 4,41 dtk tanpa balasan (run 40670372745). Analisis ulang TBLog
+lengkap (2 join sukses ke dunia yang sama) membuktikan satu-satunya
+selisih wire yang tersisa adalah SPAM magic_potion: frame 27B yang
+dikirim klien game berulang-ulang sejak sesudah Analytics sampai
+activity/get dan seterusnya. v4 = v3 + spam magic_potion (sebelum burst,
+di antara burst dan activity/get, dan berkala selama observasi).
+Koreksi dari analisis ulang: preset x8 DIHAPUS (join sukses kedua tidak
+mengirim preset sama sekali); pet = 6, lalu 19, 24 (v3 pakai 6, 6).
 
 Urutan burst (byte persis dari TBLog_0_u4jk.txt, baris 2461-2498):
   slot_interaction (58B, bawa UUID pemain -> dipakai UUID BOT dari frame
@@ -51,23 +53,19 @@ UUID_RE = re.compile(
 
 # Burst init: payload RoomEvent lengkap (hex) dari TBLog, KECUALI
 # slot_interaction (dibangun dinamis dengan UUID bot).
-PRESETS_HEX = [
-    "0806707265736574080210c69c10",
-    "0806707265736574080210c6a310",
-    "0806707265736574080210c1a210",
-    "0806707265736574080210ab9d10",
-    "0806707265736574080210b7a410",
-    "0806707265736574080210d1a110",
-    "08067072657365740802109ca410",
-    "0806707265736574080210f8a310",
-]
+# Preset x8 DIHAPUS (join sukses kedua tidak mengirim preset).
+# Pet: 6, lalu 19, 24 (nilai dari 2 join sukses).
+# magic_potion: frame 27B klien game, dikirim berulang (spam).
 FETCH_EVENTS_HEX = "080c66657463685f6576656e7473"
 INIT_POS_HEX = "0808696e69745f706f73"
 INIT_DAY_NIGHT_HEX = "080e696e69745f6461795f6e69676874"
-PET_HEX = "08037065740806"
+PET_6_HEX = "08037065740806"
+PET_19_HEX = "08037065740813"
+PET_24_HEX = "08037065740818"
 OUTFIT_HEX = "08066f7574666974"
 VHC_HEX = "08037668630805"
 STRKS_HEX = "08055354524b53"
+MAGIC_POTION_HEX = "080c6d616769635f706f74696f6e080110ffffffffffffffffff01"
 
 
 def frame_raw(hex_payload):
@@ -98,7 +96,7 @@ def find_get_activity(frames):
 async def main():
     activity_id = sys.argv[1] if len(sys.argv) > 1 else ACTIVITY_ID_DEFAULT
     bot = LU.probe_bot()
-    print(f"[*] Target activity: {activity_id} (v3: burst init + activity/get)")
+    print(f"[*] Target activity: {activity_id} (v4: burst init + spam magic_potion + activity/get)")
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
         user_jwt, alloc = await LU.login_and_allocate(
             bot["email"], bot["password"], bot["device_id"], session)
@@ -187,6 +185,7 @@ async def main():
     except Exception as e:
         print(f"[-] Gagal kirim Analytics: {e}")
 
+    potion = frame_raw(MAGIC_POTION_HEX)
     burst = []
     if bot_uuid:
         slot = LU.build_room_event_varint(
@@ -195,13 +194,11 @@ async def main():
         burst.append(("slot_interaction", slot))
     else:
         print("[!] UUID bot tidak terbaca: slot_interaction DILEWATI.")
-    for i, hx in enumerate(PRESETS_HEX):
-        burst.append((f"preset[{i}]", frame_raw(hx)))
     burst += [
         ("fetch_events", frame_raw(FETCH_EVENTS_HEX)),
         ("init_pos", frame_raw(INIT_POS_HEX)),
         ("init_day_night", frame_raw(INIT_DAY_NIGHT_HEX)),
-        ("pet", frame_raw(PET_HEX)),
+        ("pet6", frame_raw(PET_6_HEX)),
     ]
     if bot_uuid:
         burst.append(("slot_interaction", LU.build_room_event_varint(
@@ -211,13 +208,24 @@ async def main():
         ("outfit", frame_raw(OUTFIT_HEX)),
         ("vhc", frame_raw(VHC_HEX)),
         ("STRKS", frame_raw(STRKS_HEX)),
-        ("pet", frame_raw(PET_HEX)),
     ]
     try:
+        # Spam magic_potion dulu (seperti klien game: langsung sesudah
+        # Analytics, berulang), lalu burst init, lalu potion lagi.
+        for _ in range(5):
+            s.sendall(potion)
+            time.sleep(0.1)
+        print("[+] POTION spam awal terkirim (5 frame).")
         for name, fr in burst:
             s.sendall(fr)
             time.sleep(0.05)
         print(f"[+] BURST init terkirim ({len(burst)} frame).")
+        for _ in range(2):
+            s.sendall(potion)
+            time.sleep(0.1)
+        s.sendall(frame_raw(PET_19_HEX))
+        s.sendall(frame_raw(PET_24_HEX))
+        print("[+] POTION + pet19 + pet24 terkirim.")
     except Exception as e:
         print(f"[-] Gagal kirim burst init: {e}")
         s.close()
@@ -232,17 +240,25 @@ async def main():
         print("HASIL: GAGAL kirim activity/get.")
         return 1
 
-    # Baca balasan get-activity (maks ~25 dtk); catat survival.
+    # Baca balasan get-activity (maks ~25 dtk), selingi spam potion
+    # tiap putaran agar klien tetap "aktif" seperti klien game.
     got, gsize, found_id, closed = False, 0, False, False
     all_frames = []
-    for _ in range(13):
-        resp, closed, _ = LU.read_frames(s, 2)
+    for _ in range(25):
+        resp, closed, _ = LU.read_frames(s, 1)
         all_frames.extend(resp)
         g, gs = find_get_activity(resp)
         if g:
             got, gsize = True, gs
             break
         if closed:
+            if t_close is None:
+                t_close = time.time()
+            break
+        try:
+            s.sendall(potion)
+        except Exception:
+            closed = True
             if t_close is None:
                 t_close = time.time()
             break
