@@ -2,7 +2,8 @@
 
 Diadopsi dari like_profile_cloud.py v3.1 (logika paralel,
 replenishment, retry, exit code SAMA PERSIS); yang berubah hanya
-tipe like dan penghapusan histori (lihat ATURAN KERAS).
+tipe like (0/House) dan tabel histori (house_like_history, bukan
+profile_like_history — lihat ATURAN KERAS).
 
 Mesin yang dipakai (semuanya sudah TERBUKTI live, bukan tebakan):
   - Login/TCP/FrameReader/builder/decode: lookup_uuid.py + v2
@@ -31,14 +32,19 @@ ATURAN KERAS (jangan dilanggar):
   - Satu bot dipakai tepat satu tugas (tidak ada dua thread memakai
     bot yang sama; tidak ada pasangan (bot, target) yang dikirim 2x
     dalam satu job).
-  - Bot yang sudah pernah like RUMAH target DILEWATI lewat
-    IsThere-sebelum di dalam sesi (LikeType=0). TIDAK ADA tabel
-    histori rumah, dan histori like PROFIL sengaja TIDAK dipakai:
-    like rumah dan like profil adalah counter terpisah, jadi bot
-    yang sudah like profil tetap boleh like rumah orang yang sama.
-  - TIDAK ADA penulisan histori apa pun (probe rumah pun tidak
-    menulis ke profile_like_history — itu akan meracuni filter
-    job like profil).
+  - Bot yang sudah pernah like RUMAH target DILEWATI: dulu lewat
+    histori Supabase house_like_history (satu query massal, tanpa
+    sesi), sisanya lewat IsThere-sebelum di dalam sesi (LikeType=0,
+    sekaligus dicatat ke histori rumah). Histori like PROFIL
+    sengaja TIDAK dipakai: like rumah dan like profil adalah
+    counter terpisah, jadi bot yang sudah like profil tetap boleh
+    like rumah orang yang sama.
+  - Histori RUMAH hanya ditulis sesudah IsThere-sesudah (LikeType=0)
+    = True, dan TIDAK PERNAH ditulis ke profile_like_history (itu
+    akan meracuni filter job like profil). DDL tabel:
+    house-like-history.sql (dijalankan sekali di SQL Editor
+    Supabase PANEL; tanpa tabel, worker tetap jalan dengan
+    fallback IsThere per bot).
   - Kredensial TIDAK PERNAH dicetak ke log (hanya indeks bot).
   - Server menduplikasi per pasangan (bot, target): like kedua dari
     bot yang sama tidak menambah hitungan — jadi pengulangan tugas
@@ -56,7 +62,8 @@ KELUAR (exit code):
   - 0 = terkirim >= jumlah yang diminta.
   - 1 = terkirim < jumlah (stok bot fresh habis, gagal berulang,
     atau target tidak ditemukan). Rincian pasti selalu tercetak
-    di blok HASIL (terkirim / diminta / dilewati-sesi / gagal).
+    di blok HASIL (terkirim / diminta / dilewati-histori /
+    dilewati-sesi / gagal).
 
 CATATAN JUJUR TENTANG WAKTU:
   - Waktu KERJA script: ~15 detik per like baru (satu worker);
@@ -146,12 +153,40 @@ def next_limit(limit, deficit):
     return min(limit + deficit + 30, 5000)
 
 
-# ---------------------------------------------------------------- TANPA histori
-# Like rumah TIDAK memakai tabel histori apa pun. profile_like_history
-# adalah khusus like profil dan sengaja TIDAK dibaca/ditulis di sini:
-# like rumah dan like profil adalah counter terpisah. Bot yang sudah
-# like rumah dilewati lewat IsThere-sebelum di dalam sesi
-# masing-masing (lihat house_like_probe.like_house_once).
+# ---------------------------------------------------------------- Supabase panel
+def _supabase():
+    return (os.getenv("SUPABASE_URL", "").rstrip("/"),
+            os.getenv("SUPABASE_SERVICE_KEY", ""))
+
+
+def history_set_house(target_uuid):
+    """Satu query massal: {email bot yang sudah like RUMAH target}.
+    None = tabel belum ada / error -> fallback IsThere per bot.
+    MEMBACA house_like_history, BUKAN profile_like_history."""
+    url, key = _supabase()
+    if not url or not key:
+        return None
+    q = ("/rest/v1/house_like_history?select=bot_email"
+         "&target_uuid=eq." + urllib.parse.quote(target_uuid, safe="")
+         + "&limit=5000")
+    req = urllib.request.Request(url + q, headers={
+        "apikey": key, "Authorization": "Bearer " + key}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            rows = json.loads(r.read().decode("utf-8"))
+        return {row["bot_email"] for row in rows if row.get("bot_email")}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print("[!] Tabel house_like_history BELUM ADA -> "
+                  "jalan tanpa histori (fallback IsThere; buat dari "
+                  "house-like-history.sql).")
+        else:
+            print(f"[!] history_set_house HTTP {e.code} -> fallback "
+                  "IsThere.")
+        return None
+    except Exception as e:
+        print(f"[!] history_set_house gagal ({e}) -> fallback IsThere.")
+        return None
 
 
 # ---------------------------------------------------------------- resolusi nama
@@ -283,19 +318,23 @@ def main():
         return 1
     print(f"[*] {len(pool)} bot tersedia untuk job ini (limit {limit}).")
 
-    # 4. TANPA histori: bot yang sudah like rumah dilewati lewat
-    #    IsThere-sebelum di dalam sesi (lihat like_house_once).
-    #    sudah=None -> fresh_bots tidak memfilter histori apa pun.
-    sudah = None
+    # 4. Histori rumah massal (tanpa sesi) — dibaca sekali di awal;
+    #    baris yang ditulis selama job menyangkut bot yang sudah
+    #    tried. None = tabel belum ada -> fallback IsThere per bot.
+    sudah = history_set_house(target_uuid)
+    if sudah is None:
+        print("[*] Histori rumah tidak dipakai (fallback IsThere "
+              "per bot).")
 
     # 5. Ronde jalan paralel (maks 20). Selama terkirim < jumlah dan
     #    masih ada bot fresh, ambil lagi (replenishment): limit fetch
     #    membesar sejumlah deficit + cadangan; bot yang sudah tried
-    #    tidak ditugaskan lagi. Tugas yang antre dan mendapati
-    #    target sudah terpenuhi lewati sendiri (murah, tanpa sesi).
+    #    dan yang ada di histori tidak ditugaskan lagi. Tugas yang
+    #    antre dan mendapati target sudah terpenuhi lewati sendiri
+    #    (murah, tanpa sesi).
     state = {"lock": threading.Lock(), "jumlah": jumlah,
              "sent": 0, "skipped": 0,
-             "tried": set(), "failed_map": {}}
+             "tried": set(), "failed_map": {}, "history_seen": set()}
     nomor = 0
     maks_ronde = 4
     for ronde in range(1, maks_ronde + 1):
@@ -305,6 +344,11 @@ def main():
             pool = P.get_bots(target_uuid, limit=limit)
             print(f"[*] RONDE {ronde}: fetch ulang (limit {limit}) -> "
                   f"{len(pool)} bot.")
+        if sudah is not None:
+            baru_histori = {b["email"] for b in pool
+                            if b["email"] not in state["tried"]
+                            and b["email"] in sudah}
+            state["history_seen"] |= baru_histori
         tugas = fresh_bots(pool, state["tried"], sudah)
         if not tugas:
             print(f"[*] RONDE {ronde}: tidak ada bot fresh tersisa.")
@@ -337,6 +381,7 @@ def main():
     print("=" * 48)
     print(f"HASIL LIKE RUMAH: target {target_uuid}")
     print(f"  Diminta: {jumlah} | Terkirim: {sent} | "
+          f"Dilewati histori: {len(state['history_seen'])} | "
           f"Dilewati sesi (sudah like rumah): {state['skipped']} | "
           f"Gagal: {len(state['failed_map'])}")
     print(f"  Waktu total: {dt:.0f} detik")
