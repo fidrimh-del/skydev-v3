@@ -1,0 +1,58 @@
+# Diagnostik TCP ToxicBird — TAHAP 13 / UDP 9941 + RETRY ALOKASI (lihat tcp_search8_probe.py).
+#
+# Terobosan dump: DEFAULT_UDP_PORT = 9941; allocation JSON tidak
+# mengandung kunci UDP sehingga port jatuh ke default itu.
+# Tahap 12 gagal karena UDP dikirim ke port TCP. Probe ini
+# mengirim UDP ke host:9941 (+ retry alokasi sampai 3 instance
+# kalau join gagal, karena join flaky per instance).
+#
+# CARA PAKAI:
+# 1. Taruh file ini di: .github/workflows/tcp-search8-probe.yml
+# 2. Taruh tcp_search8_probe.py di root repo yang sama.
+# 3. Secrets: SUPABASE_URL, SUPABASE_SERVICE_KEY.
+#    FSTR_* untuk sementara di-hardcode di script (uji coba,
+#    repo private) — workflow ini sudah meneruskan env-nya, jadi
+#    kalau nanti dibuat sebagai Secrets, env menang otomatis.
+# 4. Tab Actions -> "TCP Search8 Probe" -> Run workflow ->
+#    isi search_name (mis. admin#000) -> baca log: cari
+#    "HASIL SEARCH DITERIMA" (via UDP/TCP) + UUID.
+#    Kirim seluruh log ke Muse.
+
+name: TCP Search8 Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_name:
+        description: "Nama pemain yang dicari (boleh nama#kode, mis. admin#000)"
+        required: true
+        default: "admin#000"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install curl_cffi urllib3
+
+      - name: Run search8 probe
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          SEARCH_NAME: ${{ inputs.search_name }}
+        run: python -u tcp_search8_probe.py
