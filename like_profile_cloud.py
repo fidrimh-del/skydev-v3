@@ -41,10 +41,12 @@ CATATAN JUJUR TENTANG WAKTU:
   - Waktu KERJA script: ~15 detik per like baru (satu worker);
     dengan 20 worker paralel, 100 like ≈ 100/20 x 15 detik ≈ 75 detik
     + overhead login (bukan 100 x 15 detik).
-  - Counter profil di game MUNCUL TERTUNDA 9-18 menit (agregasi sisi
-    server game, teramati 2026-10-28) — TIDAK bisa dipercepat dari
-    klien. Jangan menilai job dari counter instan; nilailah dari
-    blok HASIL (IsThere-sesudah) + log Actions.
+  - Counter profil di game adalah cache per sesi: angka tampil baru
+    diperbarui saat buka ulang game atau ganti server (koreksi
+    2026-10-28: BUKAN delay agregasi server). Jangan menilai job
+    dari counter dalam sesi yang sama; nilailah dari blok HASIL
+    (IsThere-sesudah) + log Actions, lalu konfirmasi counter
+    sesudah buka ulang/ganti server.
 """
 
 import asyncio
