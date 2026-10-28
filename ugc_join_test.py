@@ -1,4 +1,4 @@
-"""UGC Join Test v5.3 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
+"""UGC Join Test v6 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
 
 Perbedaan dari v4: v4 mematahkan timer tutup (survive 90,40 dtk,
 run 40671390203) tapi server tetap tidak menjawab activity/get.
@@ -158,10 +158,60 @@ def log_error_frame(fr):
         print(f"[!] ERROR-PAYLOAD ascii: {run.decode('ascii')}")
 
 
+def warm_up(user_jwt, alloc, bot):
+    """Pemanasan sesi (v6): masuk room NORMAL dulu dengan JWT yang sama,
+    seperti klien game yang selalu sudah online sebelum masuk UGC.
+    Kembalikan True bila room sync normal didapat."""
+    host, port = LU.find_host_port(alloc)
+    gsid = alloc.get("gameServerId", "")
+    print(f"[*] Pemanasan: server normal {host}:{port} ({gsid})")
+    s, pid, _ = tcp_connect_fast(host, port)
+    if s is None:
+        return False
+    try:
+        s.sendall(LU.build_login_frame(user_jwt))
+    except Exception as e:
+        print(f"[-] Pemanasan: gagal kirim login: {e}")
+        s.close()
+        return False
+    room, tbugv, closed = None, False, False
+    for _ in range(8):
+        resp, closed, _ = LU.read_frames(s, 1)
+        tb, rm = LU.scan_login_window(resp)
+        tbugv = tbugv or tb
+        if rm is not None:
+            room = rm
+        if tbugv and room is not None:
+            break
+        if closed:
+            break
+    if room is None:
+        print(f"[*] Pemanasan: room sync normal tidak datang (tbugv={tbugv}).")
+        s.close()
+        return False
+    print(f"[*] Pemanasan: masuk room normal {room}, tinggal ~3 dtk.")
+    try:
+        s.sendall(LU.build_room_event_varint(
+            "Analytics/sessionId", str(uuid.uuid4()).encode()))
+        s.sendall(LU.build_room_event_varint(
+            "Analytics/deviceId",
+            str(uuid.uuid5(uuid.NAMESPACE_DNS, bot["email"])).encode()))
+        potion = frame_raw(MAGIC_POTION_HEX)
+        for _ in range(3):
+            resp, closed, _ = LU.read_frames(s, 1)
+            if closed:
+                break
+            s.sendall(potion)
+    except Exception:
+        pass
+    s.close()
+    return True
+
+
 async def main():
     activity_id = sys.argv[1] if len(sys.argv) > 1 else ACTIVITY_ID_DEFAULT
     bot = LU.probe_bot()
-    print(f"[*] Target activity: {activity_id} (v5.3: baca payload get-activity-error)")
+    print(f"[*] Target activity: {activity_id} (v6: pemanasan sesi + baca payload get-activity-error)")
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
         user_jwt, alloc = await LU.login_and_allocate(
             bot["email"], bot["password"], bot["device_id"], session)
@@ -171,6 +221,12 @@ async def main():
         dc = alloc.get("gameServerDatacenterId")
         print(f"[*] Normal: {alloc.get('gameServerId')} (dc={dc})")
 
+    # FASE PEMANASAN (v6): masuk room normal dulu dengan JWT yang sama,
+    # persis seperti klien game yang selalu sudah online sebelum masuk UGC.
+    warm_ok = warm_up(user_jwt, alloc, bot)
+    print(f"[*] PEMANASAN: {'BERHASIL' if warm_ok else 'GAGAL (tetap lanjut activity)'}.")
+
+    async with AsyncSession(impersonate="chrome110", verify=False) as session:
         body_act = {"userToken": user_jwt, "activityId": activity_id,
                     "datacenterId": dc,
                     "gameServerProtocolVersion": LU.GAME_PROTOCOL}
@@ -414,6 +470,8 @@ async def main():
     survival = (t_close - t0) if t_close is not None else (time.time() - t0)
     print(f"[*] Selesai tinggal: {frames_stay} frame selama stay, "
           f"koneksi_tertutup_akhir={closed}, survival={survival:.2f} dtk.")
+    print(f"[*] v6: pemanasan={'YA' if warm_ok else 'TIDAK'}, "
+          f"room_activity={room}, get-activity={got}, error={error_count}x.")
     if got and found_id:
         print("HASIL: BOT SAMPAI DI ROOM + TERRAIN TARGET DITERIMA "
               f"(activity={activity_id}, server={host}:{port}, room={room}, "
