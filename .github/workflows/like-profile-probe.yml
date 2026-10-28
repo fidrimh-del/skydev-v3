@@ -1,0 +1,31 @@
+# Like Profile Probe — uji coba like profil via TCP (manual, sekali jalan).
+# Prasyarat: Secrets skydev-v3 SUPABASE_URL + SUPABASE_SERVICE_KEY = DB PANEL
+# (bukan DB toko; secrets itu sudah ada untuk workflow follow/like panel).
+# FSTR_APP_KEY/FSTR_APP_SECRET boleh kosong -> fallback di lookup_uuid.py.
+# Bot diambil dari Supabase panel (RPC get_fresh_bots), BUKAN akun probe.
+# ATURAN: Create like dikirim SEKALI saja per bot (aksi tulis, bukan query).
+name: Like Profile Probe
+on:
+  workflow_dispatch:
+    inputs:
+      target_uuid:
+        description: "UUID target like profil"
+        required: true
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u like_profile_probe.py "${{ inputs.target_uuid }}"
+        env:
+          TARGET_UUID: ${{ inputs.target_uuid }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
