@@ -285,7 +285,7 @@ async def main():
     """ASISTEN: join PASIF ke server activity (TANPA Analytics/potion sebelum
     room — hipotesis: kiriman dini v5.1 menekan room assignment di tier ini).
     Tunggu JoinedRoom s.d. 25 dtk (top-level + dalam Batch), lalu bila
-    join: burst + settle + activity/get x6 seperti v9. TIDAK butuh Bartes
+    join: burst + settle. TIDAK butuh Bartes
     online (server activity statis). Token/JWT TIDAK PERNAH dicetak."""
     bot = LU.probe_bot()
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
@@ -340,7 +340,7 @@ async def main():
         print("HASIL: ASISTEN join pasif GAGAL (tidak ada JoinedRoom 25 dtk).")
         return 1
 
-    # Sudah di room: burst + settle + activity/get seperti v9.
+    # Sudah di room: burst + settle.
     potion = frame_raw(MAGIC_POTION_HEX)
     try:
         s.sendall(LU.build_room_event_varint(
@@ -378,12 +378,12 @@ async def main():
             break
     print(f"[*] ASISTEN settle: {len(all_frames)} frame, closed={closed}")
 # ===== FASE UDP: kirim posisi 21B via UDP 120 detik + rekam broadcast =====
-    udp_port = act.get("gameServerUdpPort")
+    udp_port = act.get("gameServerUdpPort") or port  # fallback: port TCP (alokasi tanpa field UDP)
     tx = float(os.getenv("BOT_X", "8.31"))
     ty = float(os.getenv("BOT_Y", "22.13"))
     tz = float(os.getenv("BOT_Z", "-66.42"))
     trot = float(os.getenv("BOT_ROT", "319.3"))
-    print(f"[*] ASISTEN UDP port alokasi: {udp_port}")
+    print(f"[*] ASISTEN UDP port: {udp_port} (sumber: {'alokasi' if act.get('gameServerUdpPort') else 'fallback port TCP'})")
     print(f"[*] ASISTEN target posisi: X={tx} Y={ty} Z={tz} rot={trot}")
     u = None
     if udp_port:
