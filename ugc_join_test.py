@@ -1,4 +1,4 @@
-"""UGC Join Test v7 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
+"""UGC Join Test v9 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
 
 Perbedaan dari v4: v4 mematahkan timer tutup (survive 90,40 dtk,
 run 40671390203) tapi server tetap tidak menjawab activity/get.
@@ -261,7 +261,7 @@ def warm_up(user_jwt, alloc, bot):
 async def main():
     activity_id = sys.argv[1] if len(sys.argv) > 1 else ACTIVITY_ID_DEFAULT
     bot = LU.probe_bot()
-    print(f"[*] Target activity: {activity_id} (v7: device Android + pemanasan sesi + baca payload get-activity-error)")
+    print(f"[*] Target activity: {activity_id} (v9: discovery read + device Android + pemanasan sesi + baca payload get-activity-error)")
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
         user_jwt, alloc = await login_android(
             bot["email"], bot["password"], bot["device_id"], session)
@@ -277,6 +277,25 @@ async def main():
     print(f"[*] PEMANASAN: {'BERHASIL' if warm_ok else 'GAGAL (tetap lanjut activity)'}.")
 
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
+        # FASE DISCOVERY (v9): fetch metadata activity seperti UI daftar
+        # (FindActivityById, terbukti dari sandbox: GET /v1/activities/{id}
+        # + Bearer JWT -> 200) SEBELUM alokasi activity.
+        disc_status = None
+        try:
+            rd = await session.get(
+                f"https://gam-metadata-api.ptf.aftvrsys.com/v1/activities/{activity_id}",
+                headers={"Authorization": f"Bearer {user_jwt}", **LU.HEADERS_BASE},
+                timeout=15)
+            disc_status = rd.status_code
+            try:
+                meta = rd.json()
+                disc_info = (f"name={meta.get('name')}, status={meta.get('status')}, "
+                             f"type={meta.get('type')}")
+            except Exception:
+                disc_info = "(bukan JSON)"
+            print(f"[*] DISCOVERY: FindActivityById {disc_status} ({disc_info}).")
+        except Exception as e:
+            print(f"[-] DISCOVERY gagal: {type(e).__name__}")
         body_act = {"userToken": user_jwt, "activityId": activity_id,
                     "datacenterId": dc,
                     "gameServerProtocolVersion": LU.GAME_PROTOCOL}
@@ -520,7 +539,7 @@ async def main():
     survival = (t_close - t0) if t_close is not None else (time.time() - t0)
     print(f"[*] Selesai tinggal: {frames_stay} frame selama stay, "
           f"koneksi_tertutup_akhir={closed}, survival={survival:.2f} dtk.")
-    print(f"[*] v7: platform=ANDROID, pemanasan={'YA' if warm_ok else 'TIDAK'}, "
+    print(f"[*] v9: platform=ANDROID, discovery={disc_status}, pemanasan={'YA' if warm_ok else 'TIDAK'}, "
           f"room_activity={room}, get-activity={got}, error={error_count}x.")
     if got and found_id:
         print("HASIL: BOT SAMPAI DI ROOM + TERRAIN TARGET DITERIMA "
