@@ -1,0 +1,33 @@
+# House Like Probe — uji coba like RUMAH via TCP (manual, sekali jalan).
+# Sama dengan Like Profile Probe, hanya LikeType 1 -> 0 (House).
+# Target = UUID PEMILIK rumah (tidak ada house id terpisah).
+# PENTING: probe ini TIDAK menyentuh tabel profile_like_history
+# (like rumah = counter terpisah dari like profil).
+# Prasyarat: Secrets skydev-v3 SUPABASE_URL + SUPABASE_SERVICE_KEY = DB PANEL.
+# Bot diambil dari Supabase panel (RPC get_fresh_bots), BUKAN akun probe.
+# ATURAN: Create like dikirim SEKALI saja per bot (aksi tulis, bukan query).
+name: House Like Probe
+on:
+  workflow_dispatch:
+    inputs:
+      target_uuid:
+        description: "UUID pemilik rumah (target like rumah)"
+        required: true
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u house_like_probe.py "${{ inputs.target_uuid }}"
+        env:
+          TARGET_UUID: ${{ inputs.target_uuid }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
