@@ -1,14 +1,12 @@
-"""UGC Join Test v4 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion.
+"""UGC Join Test v5 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
 
-Perbedaan dari v3: v3 mengirim burst init lengkap dan koneksi TETAP
-ditutup 4,41 dtk tanpa balasan (run 40670372745). Analisis ulang TBLog
-lengkap (2 join sukses ke dunia yang sama) membuktikan satu-satunya
-selisih wire yang tersisa adalah SPAM magic_potion: frame 27B yang
-dikirim klien game berulang-ulang sejak sesudah Analytics sampai
-activity/get dan seterusnya. v4 = v3 + spam magic_potion (sebelum burst,
-di antara burst dan activity/get, dan berkala selama observasi).
-Koreksi dari analisis ulang: preset x8 DIHAPUS (join sukses kedua tidak
-mengirim preset sama sekali); pet = 6, lalu 19, 24 (v3 pakai 6, 6).
+Perbedaan dari v4: v4 mematahkan timer tutup (survive 90,40 dtk,
+run 40671390203) tapi server tetap tidak menjawab activity/get.
+Teori v5: activity/get bot terlalu dini (klien game kirim sesudah
+~115-213 frame traffic room; bot kirim di ~2 dtk, mungkin sebelum
+mechanic UGC server siap sehingga request dibuang). v5 = v4 + SETTLE
+5 dtk terima traffic room dulu, lalu activity/get + ulang tiap 5 dtk
+selama observasi 30 dtk, plus ringkasan nama frame dari server.
 
 Urutan burst (byte persis dari TBLog_0_u4jk.txt, baris 2461-2498):
   slot_interaction (58B, bawa UUID pemain -> dipakai UUID BOT dari frame
@@ -93,10 +91,29 @@ def find_get_activity(frames):
     return False, 0
 
 
+def summarize(frames):
+    """Hitung nama frame dari server (EVENT/ROOMEVENT/type)."""
+    counts = {}
+    for p in frames:
+        if len(p) >= 2 and p[0] in (0x05, 0x08):
+            ln, n = LU.read_varint(p, 1)
+            try:
+                nm = p[1 + n:1 + n + ln].decode("utf-8") if ln is not None else "?"
+            except Exception:
+                nm = "?"
+            key = ("EVENT " if p[0] == 0x05 else "ROOMEVENT ") + nm
+        elif len(p) >= 1:
+            key = f"TYPE0x{p[0]:02x}"
+        else:
+            key = "KOSONG"
+        counts[key] = counts.get(key, 0) + 1
+    return sorted(counts.items(), key=lambda kv: -kv[1])
+
+
 async def main():
     activity_id = sys.argv[1] if len(sys.argv) > 1 else ACTIVITY_ID_DEFAULT
     bot = LU.probe_bot()
-    print(f"[*] Target activity: {activity_id} (v4: burst init + spam magic_potion + activity/get)")
+    print(f"[*] Target activity: {activity_id} (v5: settle + activity/get berulang + spam magic_potion)")
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
         user_jwt, alloc = await LU.login_and_allocate(
             bot["email"], bot["password"], bot["device_id"], session)
@@ -231,37 +248,54 @@ async def main():
         s.close()
         print("HASIL: GAGAL kirim burst init.")
         return 1
-    try:
-        s.sendall(LU.build_room_event_varint("activity/get", b""))
-        print("[+] RoomEvent activity/get terkirim (sesudah burst).")
-    except Exception as e:
-        print(f"[-] Gagal kirim activity/get: {e}")
-        s.close()
-        print("HASIL: GAGAL kirim activity/get.")
-        return 1
-
-    # Baca balasan get-activity (maks ~25 dtk), selingi spam potion
-    # tiap putaran agar klien tetap "aktif" seperti klien game.
-    got, gsize, found_id, closed = False, 0, False, False
+    # FASE SETTLE (v5): 5 dtk terima traffic room + spam potion, TANPA
+    # activity/get — klien game mengirimnya sesudah ~115-213 frame.
     all_frames = []
-    for _ in range(25):
+    for _ in range(5):
         resp, closed, _ = LU.read_frames(s, 1)
         all_frames.extend(resp)
-        g, gs = find_get_activity(resp)
-        if g:
-            got, gsize = True, gs
-            break
         if closed:
-            if t_close is None:
-                t_close = time.time()
             break
         try:
             s.sendall(potion)
         except Exception:
             closed = True
-            if t_close is None:
-                t_close = time.time()
             break
+    if closed and t_close is None:
+        t_close = time.time()
+    print(f"[*] SETTLE selesai: {len(all_frames)} frame diterima, closed={closed}.")
+
+    # FASE REQUEST (v5): activity/get + ulang tiap 5 dtk, observasi 30 dtk.
+    got, gsize, found_id = False, 0, False
+    ag_count = 0
+    if not closed:
+        for i in range(30):
+            if i % 5 == 0:
+                try:
+                    s.sendall(LU.build_room_event_varint("activity/get", b""))
+                    ag_count += 1
+                    print(f"[+] activity/get ke-{ag_count} terkirim (detik observasi {i}).")
+                except Exception as e:
+                    print(f"[-] Gagal kirim activity/get: {e}")
+                    closed = True
+                    break
+            resp, closed, _ = LU.read_frames(s, 1)
+            all_frames.extend(resp)
+            g, gs = find_get_activity(resp)
+            if g:
+                got, gsize = True, gs
+                break
+            if closed:
+                if t_close is None:
+                    t_close = time.time()
+                break
+            try:
+                s.sendall(potion)
+            except Exception:
+                closed = True
+                if t_close is None:
+                    t_close = time.time()
+                break
     survival = (t_close - t0) if t_close is not None else (time.time() - t0)
     if got:
         blob = b"".join(all_frames)
@@ -272,10 +306,15 @@ async def main():
         print(f"[-] Tidak ada balasan get-activity (koneksi_tertutup={closed}, "
               f"survival={survival:.2f} dtk).")
 
-    # Tinggal di room bila masih hidup (pong jalan).
+    print("[*] RINGKASAN frame server (nama x jumlah):")
+    for nm, cnt in summarize(all_frames)[:25]:
+        print(f"    {cnt}x {nm}")
+
+    # Tinggal di room hanya bila terrain dapat (v4 sudah membuktikan
+    # survival; tanpa terrain, stay tidak menambah bukti).
     frames_stay = 0
     t_end = time.time() + STAY_SECONDS
-    while time.time() < t_end and not closed:
+    while got and time.time() < t_end and not closed:
         resp, closed, _ = LU.read_frames(s, 5)
         frames_stay += len(resp)
     if closed and t_close is None:
