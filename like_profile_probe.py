@@ -232,7 +232,7 @@ async def main():
     target = (sys.argv[1] if len(sys.argv) > 1 else
               os.getenv("TARGET_UUID", TARGET_DEFAULT))
     print(f"[*] Target like profil: {target}")
-    bots = get_bots(target, limit=3)
+    bots = get_bots(target, limit=8)
     if not bots:
         print("[!] Tidak ada bot — berhenti.")
         return 1
