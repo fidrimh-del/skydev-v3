@@ -1,20 +1,31 @@
-"""UGC Join Test v2 — bot masuk ke UGC via alokasi activity + activity/get.
+"""UGC Join Test v3 — bot masuk ke UGC via alokasi activity + BURST INIT.
 
-Perbedaan dari v1: sesudah auto-join, bot SEGERA mengirim RoomEvent
-"activity/get" (bukti dari TBLog klien game: OUT 14B = 08 0c +
-"activity/get", tanpa payload), lalu membaca balasan RoomEvent
-"get-activity" (payload terrain) dan memeriksa apakah activityId target
-ada di payload itu. v1 hanya sampai auto-join dan koneksinya ditutup
-server; history UGC tetap 6 (tidak tercatat).
+Perbedaan dari v2: v2 mengirim activity/get saja dan koneksi ditutup
+~4,5 dtk tanpa balasan; kontrol room normal (diag normal, run 40669362748)
+membuktikan tutup itu SPESIFIK ACTIVITY ROOM (bot yang sama survive
+32,86 dtk di room normal). Dari TBLog klien game (masuk UGC random),
+sebelum activity/get klien mengirim rangkaian world-entry burst — bot v2
+tidak mengirim satu pun dari ini. v3 mereplikasi burst itu persis
+(urutan + byte dari TBLog), lalu activity/get.
+
+Urutan burst (byte persis dari TBLog_0_u4jk.txt, baris 2461-2498):
+  slot_interaction (58B, bawa UUID pemain -> dipakai UUID BOT dari frame
+    tbugv, BUKAN UUID pemilik log) -> preset x8 (14B) -> fetch_events
+  (14B) -> init_pos (10B) -> init_day_night (16B) -> pet (7B) ->
+  slot_interaction lagi -> outfit (8B) -> vhc (7B) -> STRKS (7B) ->
+  pet lagi -> activity/get (14B).
+magic_potion SENGAJA tidak ikut (spam aksi pemain, bukan sinyal entry;
+jadi variabel berikutnya bila v3 gagal).
 
 Alur:
   1. Login FSTR + alokasi NORMAL (baseline + datacenterId).
   2. Alokasi ACTIVITY -> server activity.
-  3. TCP connect -> event login -> auto-join (tbugv); fallback
-     JoinRoom hanya kalau auto-join gagal, dan DILAPORKAN jalurnya.
-  4. Segera kirim "activity/get", baca balasan "get-activity" (maks 20 dtk),
-     cek activityId target di payload.
-  5. Tinggal di room 60 detik (pong jalan), lalu tutup.
+  3. TCP connect -> event login -> auto-join (tbugv); tangkap UUID bot
+     dari frame tbugv; fallback JoinRoom hanya kalau auto-join gagal.
+  4. Kirim Analytics x2, lalu burst init, lalu activity/get.
+  5. Baca balasan get-activity (maks ~25 dtk), catat survival (waktu
+     dari login sampai tutup; zona maut v1/v2/diag = ~4,5 dtk).
+  6. Bila masih hidup, tinggal di room 60 detik (pong jalan).
 
 Kriteria sukses menurut pemilik: history join UGC target 6 -> 7.
 Exit 0 hanya bila balasan "get-activity" diterima DAN activityId target
@@ -24,14 +35,55 @@ Token/JWT TIDAK PERNAH dicetak ke log.
 
 import asyncio
 import json
+import re
+import struct
 import sys
 import time
+import uuid
 
 import lookup_uuid as LU
 from curl_cffi.requests import AsyncSession
 
 ACTIVITY_ID_DEFAULT = "3e7cec3f-1ae9-4ba2-a19b-a6339e0f9b23"  # UGC Bartes
 STAY_SECONDS = 60
+UUID_RE = re.compile(
+    rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+# Burst init: payload RoomEvent lengkap (hex) dari TBLog, KECUALI
+# slot_interaction (dibangun dinamis dengan UUID bot).
+PRESETS_HEX = [
+    "0806707265736574080210c69c10",
+    "0806707265736574080210c6a310",
+    "0806707265736574080210c1a210",
+    "0806707265736574080210ab9d10",
+    "0806707265736574080210b7a410",
+    "0806707265736574080210d1a110",
+    "08067072657365740802109ca410",
+    "0806707265736574080210f8a310",
+]
+FETCH_EVENTS_HEX = "080c66657463685f6576656e7473"
+INIT_POS_HEX = "0808696e69745f706f73"
+INIT_DAY_NIGHT_HEX = "080e696e69745f6461795f6e69676874"
+PET_HEX = "08037065740806"
+OUTFIT_HEX = "08066f7574666974"
+VHC_HEX = "08037668630805"
+STRKS_HEX = "08055354524b53"
+
+
+def frame_raw(hex_payload):
+    raw = bytes.fromhex(hex_payload)
+    return struct.pack(">I", len(raw)) + raw
+
+
+def uuid_from_tbugv(frame):
+    """Ambil UUID pemain dari frame EVENT 'tbugv' (atau None)."""
+    if len(frame) < 8 or frame[0] != 0x05:
+        return None
+    ln, n = LU.read_varint(frame, 1)
+    if ln is None or frame[1 + n:1 + n + ln] != b"tbugv":
+        return None
+    m = UUID_RE.search(frame[1 + n + ln:])
+    return m.group(0).decode("ascii") if m else None
 
 
 def find_get_activity(frames):
@@ -46,7 +98,7 @@ def find_get_activity(frames):
 async def main():
     activity_id = sys.argv[1] if len(sys.argv) > 1 else ACTIVITY_ID_DEFAULT
     bot = LU.probe_bot()
-    print(f"[*] Target activity: {activity_id}")
+    print(f"[*] Target activity: {activity_id} (v3: burst init + activity/get)")
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
         user_jwt, alloc = await LU.login_and_allocate(
             bot["email"], bot["password"], bot["device_id"], session)
@@ -82,6 +134,8 @@ async def main():
     if s is None:
         print("HASIL: GAGAL konek TCP ke server activity.")
         return 1
+    t0 = time.time()
+    t_close = None
     try:
         s.sendall(LU.build_login_frame(user_jwt))
         print("[+] Event login terkirim.")
@@ -91,22 +145,27 @@ async def main():
         print("HASIL: GAGAL kirim login.")
         return 1
 
-    # Baca bertahap sampai tbugv terlihat (maks ~8 dtk), agar activity/get
-    # bisa dikirim SEGERA sesudah auto-join (v1 menunggu jendela penuh dan
-    # koneksi keburu ditutup).
-    tbugv, room, closed = False, None, False
+    # Baca bertahap sampai tbugv terlihat (maks ~8 dtk); tangkap UUID bot.
+    tbugv, room, closed, bot_uuid = False, None, False, None
     for _ in range(8):
         resp, closed, _ = LU.read_frames(s, 1)
         tb, rm = LU.scan_login_window(resp)
         tbugv = tbugv or tb
         if rm is not None:
             room = rm
+        for fr in resp:
+            u = uuid_from_tbugv(fr)
+            if u:
+                bot_uuid = u
         if tbugv and room is not None:
             break
         if closed:
             break
+    if closed and t_close is None:
+        t_close = time.time()
     print(f"[*] Login: tbugv={'YA' if tbugv else 'tidak'}, "
           f"auto-join={'room ' + str(room) if room is not None else 'tidak'}, "
+          f"UUID bot={'terbaca' if bot_uuid else 'TIDAK terbaca'}, "
           f"koneksi_tertutup={closed}")
     path = "auto-join"
     if room is None and not closed:
@@ -116,20 +175,67 @@ async def main():
         print("HASIL: GAGAL join (auto-join maupun JoinRoom).")
         s.close()
         return 1
-    print(f"[+] Bot di room {room} via {path}. Kirim activity/get...")
+
+    # Analytics (seperti klien game + kontrol normal), lalu burst init.
+    try:
+        s.sendall(LU.build_room_event_varint(
+            "Analytics/sessionId", str(uuid.uuid4()).encode()))
+        s.sendall(LU.build_room_event_varint(
+            "Analytics/deviceId",
+            str(uuid.uuid5(uuid.NAMESPACE_DNS, bot["email"])).encode()))
+        print("[+] Analytics sessionId+deviceId terkirim.")
+    except Exception as e:
+        print(f"[-] Gagal kirim Analytics: {e}")
+
+    burst = []
+    if bot_uuid:
+        slot = LU.build_room_event_varint(
+            "slot_interaction",
+            b"\x08\x02\x1a\x24" + bot_uuid.encode("ascii"))
+        burst.append(("slot_interaction", slot))
+    else:
+        print("[!] UUID bot tidak terbaca: slot_interaction DILEWATI.")
+    for i, hx in enumerate(PRESETS_HEX):
+        burst.append((f"preset[{i}]", frame_raw(hx)))
+    burst += [
+        ("fetch_events", frame_raw(FETCH_EVENTS_HEX)),
+        ("init_pos", frame_raw(INIT_POS_HEX)),
+        ("init_day_night", frame_raw(INIT_DAY_NIGHT_HEX)),
+        ("pet", frame_raw(PET_HEX)),
+    ]
+    if bot_uuid:
+        burst.append(("slot_interaction", LU.build_room_event_varint(
+            "slot_interaction",
+            b"\x08\x02\x1a\x24" + bot_uuid.encode("ascii"))))
+    burst += [
+        ("outfit", frame_raw(OUTFIT_HEX)),
+        ("vhc", frame_raw(VHC_HEX)),
+        ("STRKS", frame_raw(STRKS_HEX)),
+        ("pet", frame_raw(PET_HEX)),
+    ]
+    try:
+        for name, fr in burst:
+            s.sendall(fr)
+            time.sleep(0.05)
+        print(f"[+] BURST init terkirim ({len(burst)} frame).")
+    except Exception as e:
+        print(f"[-] Gagal kirim burst init: {e}")
+        s.close()
+        print("HASIL: GAGAL kirim burst init.")
+        return 1
     try:
         s.sendall(LU.build_room_event_varint("activity/get", b""))
-        print("[+] RoomEvent activity/get terkirim.")
+        print("[+] RoomEvent activity/get terkirim (sesudah burst).")
     except Exception as e:
         print(f"[-] Gagal kirim activity/get: {e}")
         s.close()
         print("HASIL: GAGAL kirim activity/get.")
         return 1
 
-    # Baca balasan get-activity (maks ~20 dtk).
+    # Baca balasan get-activity (maks ~25 dtk); catat survival.
     got, gsize, found_id, closed = False, 0, False, False
     all_frames = []
-    for _ in range(10):
+    for _ in range(13):
         resp, closed, _ = LU.read_frames(s, 2)
         all_frames.extend(resp)
         g, gs = find_get_activity(resp)
@@ -137,32 +243,40 @@ async def main():
             got, gsize = True, gs
             break
         if closed:
+            if t_close is None:
+                t_close = time.time()
             break
+    survival = (t_close - t0) if t_close is not None else (time.time() - t0)
     if got:
         blob = b"".join(all_frames)
         found_id = activity_id.encode("utf-8") in blob
         print(f"[+] Balasan get-activity diterima ({gsize} byte payload), "
               f"activityId target di payload={'YA' if found_id else 'TIDAK'}.")
     else:
-        print(f"[-] Tidak ada balasan get-activity (koneksi_tertutup={closed}).")
+        print(f"[-] Tidak ada balasan get-activity (koneksi_tertutup={closed}, "
+              f"survival={survival:.2f} dtk).")
 
-    # Tinggal di room (pong jalan).
+    # Tinggal di room bila masih hidup (pong jalan).
     frames_stay = 0
     t_end = time.time() + STAY_SECONDS
     while time.time() < t_end and not closed:
         resp, closed, _ = LU.read_frames(s, 5)
         frames_stay += len(resp)
+    if closed and t_close is None:
+        t_close = time.time()
     s.close()
+    survival = (t_close - t0) if t_close is not None else (time.time() - t0)
     print(f"[*] Selesai tinggal: {frames_stay} frame selama stay, "
-          f"koneksi_tertutup_akhir={closed}.")
+          f"koneksi_tertutup_akhir={closed}, survival={survival:.2f} dtk.")
     if got and found_id:
         print("HASIL: BOT SAMPAI DI ROOM + TERRAIN TARGET DITERIMA "
               f"(activity={activity_id}, server={host}:{port}, room={room}, "
-              f"jalur={path}, terrain={gsize}B).")
+              f"jalur={path}, terrain={gsize}B, survival={survival:.2f}dtk).")
         print("CEK HISTORY UGC: 6 -> ? (7 = berfungsi).")
         return 0
     print("HASIL: GAGAL verifikasi terrain target "
-          f"(get-activity={got}, activityId_di_payload={found_id}).")
+          f"(get-activity={got}, activityId_di_payload={found_id}, "
+          f"survival={survival:.2f}dtk).")
     print("CEK HISTORY UGC: 6 -> ? (7 = berfungsi).")
     return 1
 
