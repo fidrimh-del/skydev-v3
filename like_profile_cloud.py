@@ -31,11 +31,19 @@ ATURAN KERAS (jangan dilanggar):
     bot yang sama tidak menambah hitungan — jadi pengulangan tugas
     karena gagal tidak akan menggandakan like.
 
+REPLENISHMENT (v3): selama terkirim < jumlah dan masih ada bot
+  fresh, fetch ulang dengan limit membesar (deficit + 30) dan
+  jalankan bot fresh berikutnya (maks 4 ronde fetch); terakhir,
+  bot yang gagal dicoba ulang sekali. Jaminan: MINIMAL jumlah
+  bila stok bot cukup — bukan persis jumlah (overshoot wave
+  paralel tetap berlaku; kelebihan itu bonus, bukan kerugian).
+
 KELUAR (exit code):
   - 0 = terkirim >= jumlah yang diminta.
-  - 1 = terkirim < jumlah (kurang bot, gagal semua, atau target
-    tidak ditemukan). Rincian pasti selalu tercetak di blok HASIL
-    (terkirim / diminta / dilewati-sudah-like / gagal).
+  - 1 = terkirim < jumlah (stok bot fresh habis, gagal berulang,
+    atau target tidak ditemukan). Rincian pasti selalu tercetak
+    di blok HASIL (terkirim / diminta / dilewati-histori /
+    dilewati-sesi / gagal).
 
 CATATAN JUJUR TENTANG WAKTU:
   - Waktu KERJA script: ~15 detik per like baru (satu worker);
@@ -102,6 +110,25 @@ def parse_args(argv):
 def decide_exit(sent, jumlah):
     """0 = target terpenuhi, 1 = kurang (apa pun sebabnya)."""
     return 0 if sent >= jumlah else 1
+
+
+def fresh_bots(pool, tried, history):
+    """Bot yang belum pernah ditugaskan dan belum ada di histori.
+    history=None -> filter histori dilewati (fallback IsThere)."""
+    out = []
+    for b in pool or []:
+        email = b.get("email")
+        if not email or email in tried:
+            continue
+        if history is not None and email in history:
+            continue
+        out.append(b)
+    return out
+
+
+def next_limit(limit, deficit):
+    """Limit fetch ronde berikutnya: membesar sejumlah deficit + cadangan."""
+    return min(limit + deficit + 30, 1000)
 
 
 # ---------------------------------------------------------------- Supabase panel
@@ -174,10 +201,16 @@ async def bot_coro(bot, target_uuid):
 
 def run_bot(idx, bot, target_uuid, state):
     """Satu tugas worker (dijalankan di thread pool). Menghormati
-    target: kalau jumlah sudah terpenuhi, langsung lewati."""
+    target: kalau jumlah sudah terpenuhi, langsung lewati (tanpa sesi).
+    Bot yang sempat jalan dicatat di tried (tidak ditugaskan lagi di
+    ronde berikutnya); yang gagal dicatat di failed_map untuk ronde
+    retry (bila nantinya terkirim, ia keluar dari failed_map — jadi
+    hitungan Gagal di HASIL adalah bot yang AKHIRNYA gagal, bukan
+    jumlah kejadian gagal)."""
     with state["lock"]:
         if state["sent"] >= state["jumlah"]:
             return "skip-target-met"
+        state["tried"].add(bot["email"])
     time.sleep(random.uniform(0, 1))  # stagger login (hindari herd)
     t0 = time.time()
     try:
@@ -189,14 +222,35 @@ def run_bot(idx, bot, target_uuid, state):
     with state["lock"]:
         if hasil == "sent":
             state["sent"] += 1
+            state["failed_map"].pop(bot["email"], None)
         elif hasil == "already":
             state["skipped"] += 1
+            state["failed_map"].pop(bot["email"], None)
         else:
-            state["failed"] += 1
+            state["failed_map"][bot["email"]] = bot
     print(f"[*] Bot {idx}: {hasil} ({dt:.0f} detik) | "
           f"terkirim={state['sent']} dilewati={state['skipped']} "
           f"gagal={state['failed']}")
     return hasil
+
+
+def jalankan_tugas(tugas, target_uuid, state, max_paralel, nomor_awal):
+    """Jalankan daftar tugas di thread pool; tunggu semua selesai.
+    Kembalikan nomor tugas terakhir (penomoran berlanjut antar ronde
+    agar log 'Bot N' tidak berulang)."""
+    nomor = nomor_awal
+    with ThreadPoolExecutor(max_workers=max_paralel) as pool:
+        futs = []
+        for bot in tugas:
+            nomor += 1
+            futs.append(pool.submit(run_bot, nomor, bot, target_uuid,
+                                    state))
+        for f in futs:
+            try:
+                f.result()
+            except Exception as e:
+                print(f"[!] Tugas worker exception: {e}")
+    return nomor
 
 
 # ---------------------------------------------------------------- main
@@ -231,47 +285,83 @@ def main():
             return 1
         target_uuid = hit["uuid"]
 
-    # 3. Daftar bot resmi untuk UUID ini (limit = jumlah + cadangan).
-    bots = P.get_bots(target_uuid, limit=min(jumlah + 30, 500))
-    if not bots:
+    # 3. Ronde 1: daftar bot resmi (limit = jumlah + cadangan).
+    limit = min(jumlah + 30, 500)
+    pool = P.get_bots(target_uuid, limit=limit)
+    if not pool:
         print("[!] Tidak ada bot untuk target ini — berhenti.")
         return 1
-    print(f"[*] {len(bots)} bot tersedia untuk job ini.")
+    print(f"[*] {len(pool)} bot tersedia untuk job ini (limit {limit}).")
 
-    # 4. Filter histori massal (tanpa sesi).
+    # 4. Histori massal (tanpa sesi) — dibaca sekali di awal; baris
+    #    yang ditulis selama job menyangkut bot yang sudah tried.
     sudah = history_set(target_uuid)
     if sudah is None:
-        tugas = bots
         print("[*] Histori tidak dipakai (fallback IsThere per bot).")
-    else:
-        tugas = [b for b in bots if b["email"] not in sudah]
-        print(f"[*] Histori: {len(sudah)} bot sudah like target ini "
-              f"-> dilewati tanpa sesi; {len(tugas)} bot tersisa.")
 
-    # 5. Jalan paralel (maks 20). Tugas yang antre dan mendapati target
-    #    sudah terpenuhi akan lewati sendiri (murah, tanpa sesi).
+    # 5. Ronde jalan paralel (maks 20). Selama terkirim < jumlah dan
+    #    masih ada bot fresh, ambil lagi (replenishment): limit fetch
+    #    membesar sejumlah deficit + cadangan; bot yang sudah tried
+    #    dan yang ada di histori tidak ditugaskan lagi. Tugas yang
+    #    antre dan mendapati target sudah terpenuhi lewati sendiri
+    #    (murah, tanpa sesi).
     state = {"lock": threading.Lock(), "jumlah": jumlah,
-             "sent": 0, "skipped": 0, "failed": 0}
-    with ThreadPoolExecutor(max_workers=max_paralel) as pool:
-        futs = [pool.submit(run_bot, i + 1, bot, target_uuid, state)
-                for i, bot in enumerate(tugas)]
-        for f in futs:
-            try:
-                f.result()
-            except Exception as e:
-                print(f"[!] Tugas worker exception: {e}")
+             "sent": 0, "skipped": 0,
+             "tried": set(), "failed_map": {}, "history_seen": set()}
+    nomor = 0
+    maks_ronde = 4
+    for ronde in range(1, maks_ronde + 1):
+        if ronde > 1:
+            deficit = jumlah - state["sent"]
+            limit = next_limit(limit, deficit)
+            pool = P.get_bots(target_uuid, limit=limit)
+            print(f"[*] RONDE {ronde}: fetch ulang (limit {limit}) -> "
+                  f"{len(pool)} bot.")
+        if sudah is not None:
+            baru_histori = {b["email"] for b in pool
+                            if b["email"] not in state["tried"]
+                            and b["email"] in sudah}
+            state["history_seen"] |= baru_histori
+        tugas = fresh_bots(pool, state["tried"], sudah)
+        if not tugas:
+            print(f"[*] RONDE {ronde}: tidak ada bot fresh tersisa.")
+            break
+        print(f"[*] RONDE {ronde}: {len(tugas)} bot fresh jalan "
+              f"(paralel {max_paralel}).")
+        nomor = jalankan_tugas(tugas, target_uuid, state, max_paralel,
+                               nomor)
+        print(f"[*] RONDE {ronde} selesai: terkirim={state['sent']} "
+              f"dilewati_sesi={state['skipped']} "
+              f"gagal={len(state['failed_map'])}")
+        if state["sent"] >= jumlah:
+            break
+
+    # 6. Ronde retry terakhir: bila masih kurang dan ada bot gagal,
+    #    coba ulang sekali (sesi + alokasi fresh). Hanya sekali —
+    #    gagal dua kali berarti instance/bot bermasalah, bukan
+    #    sekadar apes.
+    if state["sent"] < jumlah and state["failed_map"]:
+        retry = list(state["failed_map"].values())
+        print(f"[*] RONDE RETRY: {len(retry)} bot gagal dicoba ulang "
+              f"sekali (sesi fresh).")
+        nomor = jalankan_tugas(retry, target_uuid, state, max_paralel,
+                               nomor)
+        print(f"[*] RONDE RETRY selesai: terkirim={state['sent']} "
+              f"gagal={len(state['failed_map'])}")
 
     dt = time.time() - t0
-    sent, skipped, failed = state["sent"], state["skipped"], state["failed"]
+    sent = state["sent"]
     print("=" * 48)
     print(f"HASIL LIKE PROFIL: target {target_uuid}")
     print(f"  Diminta: {jumlah} | Terkirim: {sent} | "
-          f"Dilewati (sudah like): {skipped} | Gagal: {failed}")
+          f"Dilewati histori: {len(state['history_seen'])} | "
+          f"Dilewati sesi: {state['skipped']} | "
+          f"Gagal: {len(state['failed_map'])}")
     print(f"  Waktu total: {dt:.0f} detik")
     print("=" * 48)
     if sent < jumlah:
         print(f"[!] Kurang {jumlah - sent} like dari target "
-              "(bot habis / gagal — cek log di atas).")
+              "(stok bot fresh habis / gagal berulang — cek log).")
     return decide_exit(sent, jumlah)
 
 
