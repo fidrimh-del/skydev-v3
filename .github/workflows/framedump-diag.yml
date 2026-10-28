@@ -1,0 +1,25 @@
+# Diagnostik Dump Frame — ambil frame Connected (0x03) dari koneksi TCP
+# bot, decode payload JWT-nya, cetak kunci klaim (mencari field port UDP).
+# Token utuh TIDAK pernah dicetak (hanya kunci + nilai pendek).
+# Bot: akun probe (fallback hardcode di lookup_uuid.py atas perintah pemilik,
+# repo private); Secrets FSTR_*/PROBE_* menang kalau ada.
+# Log run SENGAJA tidak dihapus (bukti diagnostik).
+name: Diagnostik Dump Frame
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u framedump_diag.py
+        env:
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PROBE_EMAIL: ${{ secrets.PROBE_EMAIL }}
+          PROBE_PASSWORD: ${{ secrets.PROBE_PASSWORD }}
