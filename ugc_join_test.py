@@ -1,4 +1,4 @@
-"""UGC Join Test v5.2 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
+"""UGC Join Test v5.3 — bot masuk ke UGC via alokasi activity + BURST INIT + SPAM magic_potion + activity/get BERULANG.
 
 Perbedaan dari v4: v4 mematahkan timer tutup (survive 90,40 dtk,
 run 40671390203) tapi server tetap tidak menjawab activity/get.
@@ -149,10 +149,19 @@ def tcp_connect_fast(host, port):
     return None, None, []
 
 
+def log_error_frame(fr):
+    """Cetak payload frame get-activity-error (hex + string ASCII)."""
+    ln, n = LU.read_varint(fr, 1)
+    payload = fr[1 + n + ln:] if ln is not None else b""
+    print(f"[!] ERROR-PAYLOAD len={len(payload)} hex={payload.hex()}")
+    for run in re.findall(rb"[ -~]{4,}", payload):
+        print(f"[!] ERROR-PAYLOAD ascii: {run.decode('ascii')}")
+
+
 async def main():
     activity_id = sys.argv[1] if len(sys.argv) > 1 else ACTIVITY_ID_DEFAULT
     bot = LU.probe_bot()
-    print(f"[*] Target activity: {activity_id} (v5.2: login cepat + settle + activity/get berulang)")
+    print(f"[*] Target activity: {activity_id} (v5.3: baca payload get-activity-error)")
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
         user_jwt, alloc = await LU.login_and_allocate(
             bot["email"], bot["password"], bot["device_id"], session)
@@ -342,6 +351,7 @@ async def main():
     # FASE REQUEST (v5): activity/get + ulang tiap 5 dtk, observasi 30 dtk.
     got, gsize, found_id = False, 0, False
     ag_count = 0
+    error_count = 0
     if not closed:
         for i in range(30):
             if i % 5 == 0:
@@ -355,6 +365,13 @@ async def main():
                     break
             resp, closed, _ = LU.read_frames(s, 1)
             all_frames.extend(resp)
+            for fr in resp:
+                if len(fr) >= 2 and fr[0] == 0x08:
+                    ln2, n2 = LU.read_varint(fr, 1)
+                    if ln2 is not None and fr[1 + n2:1 + n2 + ln2] == b"get-activity-error":
+                        error_count += 1
+                        print(f"[!] get-activity-error ke-{error_count} diterima.")
+                        log_error_frame(fr)
             g, gs = find_get_activity(resp)
             if g:
                 got, gsize = True, gs
@@ -378,7 +395,7 @@ async def main():
               f"activityId target di payload={'YA' if found_id else 'TIDAK'}.")
     else:
         print(f"[-] Tidak ada balasan get-activity (koneksi_tertutup={closed}, "
-              f"survival={survival:.2f} dtk).")
+              f"survival={survival:.2f}dtk, get-activity-error={error_count}x).")
 
     print("[*] RINGKASAN frame server (nama x jumlah):")
     for nm, cnt in summarize(all_frames)[:25]:
