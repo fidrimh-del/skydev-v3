@@ -172,7 +172,15 @@ def tcp_connect(host, port):
 
 def tcp_join_only(s, gsid):
     """JoinRoom saja (dipakai kalau login tidak auto-join).
-    Kembalikan roomId atau None."""
+    Kembalikan roomId atau None.
+    FAIL-FAST (2026-10-28): sifat join adalah per-instance, bukan
+    per-room — instance yang sehat menerima suffix/room awal, instance
+    yang buruk menolak SEMUA room (terbukti: 10/10 gagal di satu
+    instance, lalu instance berikutnya langsung auto-join). Mencoba
+    11 room hanya membuang ~30 detik di instance mati. Jadi cukup
+    suffix + 4 room awal (maks 5 percobaan, ~15 detik); kalau semua
+    gagal, pemanggil langsung alokasi ulang ke instance baru — itulah
+    pemulihan yang terbukti, bukan memaksa instance yang menolak."""
     room_candidates = []
     suffix = None
     if "::" in gsid:
@@ -182,7 +190,7 @@ def tcp_join_only(s, gsid):
             suffix = None
     if suffix is not None:
         room_candidates.append(suffix)
-    for r in range(0, 10):
+    for r in range(0, 4):
         if r not in room_candidates:
             room_candidates.append(r)
     for rid in room_candidates:
