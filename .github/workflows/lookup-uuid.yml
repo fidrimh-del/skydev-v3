@@ -1,0 +1,55 @@
+# Lookup UUID PK XD dari nama — versi CEPAT (lihat lookup_uuid.py).
+#
+# Jalur terbukti (tahap 16): login FSTR -> allocation -> TCP
+# connect -> Event "login" -> auto-join/JoinRoom -> search ->
+# search_friend_result -> UUID.
+#
+# CARA PAKAI:
+# 1. Taruh file ini di: .github/workflows/lookup-uuid.yml
+# 2. Taruh lookup_uuid.py di root repo yang sama.
+# 3. Tab Actions -> "Lookup UUID" -> Run workflow -> isi
+#    search_name (mis. Admin#000) -> baca blok HASIL di log.
+#
+# Kredensial: akun bot pemilik (env Secrets menang; kalau tidak
+# ada, pakai nilai di script atas perintah pemilik — hapus nilai
+# hardcode saat masuk produksi dan pindah ke Secrets).
+
+name: Lookup UUID
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_name:
+        description: "Nama pemain yang dicari (boleh nama#kode, mis. Admin#000)"
+        required: true
+        default: "Admin#000"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install curl_cffi urllib3
+
+      - name: Run lookup
+        env:
+          PROBE_EMAIL: ${{ secrets.PROBE_EMAIL }}
+          PROBE_PASSWORD: ${{ secrets.PROBE_PASSWORD }}
+          PROBE_DEVICE_ID: ${{ secrets.PROBE_DEVICE_ID }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          SEARCH_NAME: ${{ inputs.search_name }}
+        run: python -u lookup_uuid.py
