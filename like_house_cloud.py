@@ -320,6 +320,9 @@ def main():
               "JUMLAH >= 1; MAX_PARALEL dijepit 1..50 (default 20).")
         return 1
     target_in, jumlah, max_paralel = parsed
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    L.apply_panel_versions()
     t0 = time.time()
     print(f"[*] Like rumah: target={target_in} jumlah={jumlah} "
           f"paralel_maks={max_paralel}")
