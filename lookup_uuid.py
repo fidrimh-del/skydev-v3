@@ -72,6 +72,18 @@ LOBBY_URL = "https://pkxd-lobby.aftvrsys.com"
 GAME_PROTOCOL = "1.93.0"
 VERSION = "1.93.4"
 
+# Mode senyap untuk job like massal: True = sembunyikan log operasional
+# per-bot (login OK, allocation, connect, join). Hasil per-bot tetap
+# dilaporkan pemanggil (run_bot cloud). Default False agar poller UUID
+# dan skrip lain tidak berubah perilaku; skrip like mengeset True.
+QUIET = False
+
+
+def qlog(*args, **kwargs):
+    if not QUIET:
+        print(*args, **kwargs)
+
+
 HEADERS_BASE = {
     "User-Agent": "UnityPlayer/2022.3.62f3 (UnityWebRequest/1.0, libcurl/8.10.1-DEV)",
     "Accept": "*/*",
@@ -209,12 +221,12 @@ def tcp_connect(host, port):
         s.settimeout(5)
         s.connect((host, port))
     except Exception as e:
-        print(f"[-] Gagal konek TCP: {e}")
+        qlog(f"[-] Gagal konek TCP: {e}")
         return None, None
     try:
         s.sendall(struct.pack(">I", 1) + b"\x03")
     except Exception as e:
-        print(f"[-] Gagal kirim Connect: {e}")
+        qlog(f"[-] Gagal kirim Connect: {e}")
         s.close()
         return None, None
     resp, closed, pongs, _ = read_until(
@@ -223,11 +235,11 @@ def tcp_connect(host, port):
     for p in resp:
         if len(p) >= 5 and p[0] == 0x03:
             pid = int.from_bytes(p[1:5], "big")
-    print(f"[*] Jendela Connect: {len(resp)} frame, pong: {pongs}")
+    qlog(f"[*] Jendela Connect: {len(resp)} frame, pong: {pongs}")
     if pid is not None:
-        print(f"[+] Connected: playerId={pid}")
+        qlog(f"[+] Connected: playerId={pid}")
         return s, pid
-    print("[-] Tidak ada frame Connected.")
+    qlog("[-] Tidak ada frame Connected.")
     s.close()
     return None, None
 
@@ -259,21 +271,21 @@ def tcp_join_only(s, gsid):
         try:
             s.sendall(build_join_frame(rid))
         except Exception as e:
-            print(f"[-] Gagal kirim JoinRoom: {e}")
+            qlog(f"[-] Gagal kirim JoinRoom: {e}")
             break
         resp, closed, pongs = read_frames(s, 3)
         joined = None
         for p in resp:
             if len(p) >= 6 and p[0] == 0x06 and p[1] == 1:
                 joined = int.from_bytes(p[2:6], "big")
-        print(f"[*] JoinRoom({rid}): {len(resp)} frame, pong: {pongs}, "
-              f"hasil={'SUKSES room ' + str(joined) if joined is not None else 'gagal'}")
+        qlog(f"[*] JoinRoom({rid}): {len(resp)} frame, pong: {pongs}, "
+             f"hasil={'SUKSES room ' + str(joined) if joined is not None else 'gagal'}")
         if closed:
-            print("[!] Koneksi ditutup saat join.")
+            qlog("[!] Koneksi ditutup saat join.")
             break
         if joined is not None:
             return joined
-    print("[!] Semua JoinRoom gagal.")
+    qlog("[!] Semua JoinRoom gagal.")
     return None
 
 
@@ -469,7 +481,7 @@ async def login_and_allocate(email, password, device_id, session):
     h1["x-fstr-signature"] = compute_signature("POST", "/v1/auth/sessions", b_p1)
     r1 = await session.post(ACCOUNT_URL + "/v1/auth/sessions", data=b_p1, headers=h1, timeout=20)
     if r1.status_code != 200:
-        print(f"[-] auth/sessions gagal: {r1.status_code}")
+        qlog(f"[-] auth/sessions gagal: {r1.status_code}")
         return None, None
     auth_token = r1.json().get("authToken")
     await asyncio.sleep(random.uniform(0.1, 0.3))
@@ -481,15 +493,15 @@ async def login_and_allocate(email, password, device_id, session):
     r2 = await session.post(ACCOUNT_URL + "/v1/users/sessions", data=b_p2, headers=h2, timeout=20)
     user_jwt = r2.json().get("userToken")
     if not user_jwt:
-        print("[-] users/sessions tidak mengembalikan userToken")
+        qlog("[-] users/sessions tidak mengembalikan userToken")
         return None, None
-    print("[+] Login OK, JWT didapat.")
+    qlog("[+] Login OK, JWT didapat.")
     await asyncio.sleep(random.uniform(0.1, 0.3))
     p3 = {"userToken": user_jwt, "gameServerProtocolVersion": GAME_PROTOCOL, "isPrivate": False}
     b_p3 = json.dumps(p3, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     r3 = await session.post(LOBBY_URL + "/lobby/allocation", data=b_p3,
                             headers=HEADERS_BASE.copy(), timeout=20)
-    print(f"[*] allocation status: {r3.status_code}")
+    qlog(f"[*] allocation status: {r3.status_code}")
     try:
         body = r3.json()
     except Exception:
