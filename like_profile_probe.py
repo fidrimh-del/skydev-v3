@@ -24,12 +24,12 @@ jawaban server biasanya tiba dalam 1-3 detik):
   4. Tanpa jeda settle 2 detik (FrameReader melewati frame ambient
      dengan sendirinya) dan tanpa menunggu tbugv (yang menentukan
      hanya auto-join/join).
-  5. SKIP-JOIN (2026-10-29, mengikuti bukti search UUID yang dibalas
-     tanpa room): IsThere/Create dicoba tanpa join dulu; join hanya
-     fallback bila jalur tanpa join tidak membuktikan hasil. Create
-     SEKALI per fase; Create fase 2 hanya bila IsThere sesudah join
-     menunjukkan belum ada like — server menduplikasi per pasangan
-     (bot, target) sehingga tidak mengganda.
+  5. TANPA JOIN (2026-10-29, bukti produksi run 40814221270: 30/30
+     like terkirim tanpa satu pun join berhasil; fallback join 0
+     kali menyelamatkan dari 63 percobaan): join DIHAPUS TOTAL —
+     IsThere/Create langsung sesudah login, sesi yang IsThere-nya
+     tidak menjawab langsung gagal cepat (pemanggil coba instance
+     ke-2). Create kini SEKALI per sesi penuh.
 
 YANG TIDAK BERUBAH (aturan keras, jangan dilanggar):
   - Create dikirim SEKALI saja per bot (aksi tulis; 2x berisiko +2).
@@ -288,22 +288,15 @@ def history_put(bot_email, target_uuid):
 
 async def like_once(session, bot, target_uuid):
     """Satu percobaan penuh (tanpa cek histori — pemanggil yang
-    mengecek histori dulu). SKIP-JOIN (2026-10-29, mengikuti bukti
-    search UUID): coba tanpa join dulu — IsThere/Create langsung
-    sesudah login. Like selama ini dikirim dari room sembarang
-    (bukan room target), jadi room kemungkinan tidak relevan,
-    TAPI like adalah aksi tulis (beda dari search yang baca) sehingga
-    join dipertahankan sebagai fallback: jalur tanpa join yang tidak
-    membuktikan hasil selalu jatuh ke perilaku lama (join -> sekuens
-    penuh), jadi like tidak bisa rusak oleh percobaan ini.
-    Alur: login -> [Fase 1] IsThere-sebelum (tanpa join) -> Create ->
-    jeda 2 dtk -> IsThere-sesudah (+1x ulang kalau belum True) ->
-    [Fase 2, fallback] join -> IsThere -> Create (bila perlu) ->
-    jeda 2 dtk -> IsThere-sesudah (+1x ulang).
-    Create dikirim SEKALI per fase; Create fase 2 hanya bila IsThere
-    sesudah join menunjukkan belum ada like — server menduplikasi
-    per pasangan (bot, target) sehingga tidak mengganda (aturan
-    panel like_profile_cloud.py).
+    mengecek histori dulu). TANPA JOIN SAMA SEKALI (2026-10-29:
+    bukti produksi run 40814221270 — 30/30 like terkirim tanpa satu
+    pun join berhasil; fallback join 0 kali menyelamatkan dari 63
+    percobaan, jadi dihapus karena hanya membakar ~20 detik per
+    instance + log. Sesi yang IsThere-nya tidak menjawab = sesi mati
+    -> gagal cepat, pemanggil mencoba instance ke-2).
+    Alur: login -> IsThere-sebelum -> Create SEKALI -> jeda 2 dtk ->
+    IsThere-sesudah (+1x ulang kalau belum True).
+    Create kini SEKALI per sesi penuh (aturan keras terpenuhi penuh).
     Kembalikan dict atau None kalau gagal di tengah jalan."""
     user_jwt, alloc = await L.login_and_allocate(
         bot["email"], bot["password"], bot["device_id"], session)
@@ -365,8 +358,7 @@ async def like_once(session, bot, target_uuid):
             after = do_is_there()
         return after, True
 
-    # FASE 1: tanpa join.
-    print("[*] Cek IsThere tanpa join (sudah pernah like?) ...")
+    print("[*] Cek IsThere (sudah pernah like?) ...")
     before = do_is_there()
     if before and before["exists"] is True:
         print("[!] Bot ini SUDAH pernah like target (pemanasan) — catat "
@@ -374,54 +366,18 @@ async def like_once(session, bot, target_uuid):
         history_put(bot["email"], target_uuid)
         s.close()
         return {"already": True}
-    created = False
-    after = None
-    if before is not None:
-        # Kanal like menjawab tanpa join -> kirim Create.
-        after, created = do_create_verify()
-        if after and after["exists"] is True:
-            history_put(bot["email"], target_uuid)
-            s.close()
-            return {"already": False, "before": before, "after": after}
-    # FASE 2: fallback join (hanya bila fase 1 tidak membuktikan hasil).
-    print("[*] Jalur tanpa join belum membuktikan hasil — fallback: join.")
-    state = {"room": None}
-
-    def login_pred(fr):
-        t, r = L.scan_login_window([fr])
-        if r is not None:
-            state["room"] = r
-        return state["room"] is not None
-
-    fr, closed = reader.read_until(login_pred, 5)
-    print(f"[*] Login: auto-join="
-          f"{'room ' + str(state['room']) if state['room'] is not None else 'tidak'}")
-    if closed:
-        print("[!] Koneksi ditutup setelah login.")
+    if before is None:
+        # Kanal like tidak menjawab tanpa join -> sesi mati. Gagal
+        # cepat (tanpa join fallback); pemanggil coba instance ke-2.
+        print("[!] IsThere tidak menjawab — sesi mati, gagal cepat "
+              "(tanpa join).")
         s.close()
         return None
-    room = state["room"]
-    if room is None:
-        room = L.tcp_join_only(s, gsid)
-    if room is None:
-        print("[!] Join gagal di instance ini.")
-        s.close()
-        return None
-    print(f"[+] Bergabung room {room}.")
-    before2 = do_is_there()
-    if before2 and before2["exists"] is True:
-        history_put(bot["email"], target_uuid)
-        s.close()
-        # Kalau Create fase 1 sempat terkirim, like ini dari job ini
-        # (sent), bukan like lama (already).
-        if created:
-            return {"already": False, "before": before, "after": before2}
-        return {"already": True}
-    after2, _ = do_create_verify()
+    after, _ = do_create_verify()
     s.close()
-    if after2 and after2["exists"] is True:
+    if after and after["exists"] is True:
         history_put(bot["email"], target_uuid)
-    return {"already": False, "before": before2, "after": after2}
+    return {"already": False, "before": before, "after": after}
 
 
 async def main():
