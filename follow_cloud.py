@@ -9,6 +9,7 @@ import base64
 from collections import OrderedDict
 from curl_cffi.requests import AsyncSession
 import urllib3
+import lookup_uuid as L
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -185,6 +186,12 @@ async def main():
     target_uuid = sys.argv[1].strip()
     jumlah_order = int(sys.argv[2].strip())
     engine = PKXDSkydevFollowEngine()
+
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    L.apply_panel_versions()
+    engine.version = L.VERSION
+    engine.game_protocol = L.GAME_PROTOCOL
 
     print(f"[*] SKYDEV V3 CLOUD: Menghubungkan ke Database untuk target {target_uuid[:8]}...")
 
