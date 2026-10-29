@@ -148,14 +148,14 @@ async def like_house_once(session, bot, target_uuid):
     user_jwt, alloc = await L.login_and_allocate(
         bot["email"], bot["password"], bot["device_id"], session)
     if not alloc:
-        print("[-] Allocation gagal.")
+        P.vlog("[-] Allocation gagal.")
         return None
     host, port = L.find_host_port(alloc)
     gsid = alloc.get("gameServerId", "")
     suffix = gsid.rsplit("::", 1)[1] if "::" in gsid else "?"
-    print(f"[*] Server: {host}:{port} (room suffix {suffix})")
+    P.vlog(f"[*] Server: {host}:{port} (room suffix {suffix})")
     if not host or not port:
-        print("[-] Host/port tidak ketemu di allocation.")
+        P.vlog("[-] Host/port tidak ketemu di allocation.")
         return None
     s, pid = L.tcp_connect(host, port)
     if s is None:
@@ -163,9 +163,9 @@ async def like_house_once(session, bot, target_uuid):
     reader = P.FrameReader(s)
     try:
         s.sendall(L.build_login_frame(user_jwt))
-        print("[+] Event login terkirim.")
+        P.vlog("[+] Event login terkirim.")
     except Exception as e:
-        print(f"[-] Gagal kirim event login: {e}")
+        P.vlog(f"[-] Gagal kirim event login: {e}")
         s.close()
         return None
 
@@ -181,20 +181,20 @@ async def like_house_once(session, bot, target_uuid):
         return _jstate["room"] is not None
 
     fr, closed = reader.read_until(_login_pred, 5)
-    print(f"[*] Login: auto-join="
+    P.vlog(f"[*] Login: auto-join="
           f"{'room ' + str(_jstate['room']) if _jstate['room'] is not None else 'tidak'}")
     if closed:
-        print("[!] Koneksi ditutup setelah login.")
+        P.vlog("[!] Koneksi ditutup setelah login.")
         s.close()
         return None
     room = _jstate["room"]
     if room is None:
         room = L.tcp_join_only(s, gsid)
     if room is None:
-        print("[!] Join gagal di instance ini.")
+        P.vlog("[!] Join gagal di instance ini.")
         s.close()
         return None
-    print(f"[+] Bergabung room {room}.")
+    P.vlog(f"[+] Bergabung room {room}.")
 
     def do_is_there_house():
         frame = L.build_room_event_varint(
@@ -209,7 +209,7 @@ async def like_house_once(session, bot, target_uuid):
         if fr is None:
             return None
         dec = P.decode_is_there_result(fr)
-        print(f"    is_there_house: exists={dec['exists']} "
+        P.vlog(f"    is_there_house: exists={dec['exists']} "
               f"liked_user={dec['liked_user']} "
               f"like_type={dec['like_type']} error={dec['error']!r}")
         return dec
@@ -218,7 +218,7 @@ async def like_house_once(session, bot, target_uuid):
         """Kirim Create SEKALI (LikeType=0), jeda 2 dtk,
         IsThere-sesudah (LikeType=0) (+1x ulang sesudah jeda 3 dtk).
         Kembalikan (after_dec, answered_bool)."""
-        print("[*] Kirim Create like RUMAH (SEKALI, LikeType=0) ...")
+        P.vlog("[*] Kirim Create like RUMAH (SEKALI, LikeType=0) ...")
         try:
             s.sendall(L.build_room_event_varint(
                 "like", P.build_like_protobuf(0, target_uuid, LIKE_TYPE_HOUSE)))
@@ -226,11 +226,11 @@ async def like_house_once(session, bot, target_uuid):
             return None, False
         time.sleep(2)  # beri server waktu mencatat (tanpa menunggu
         # balasan Create yang terbukti tidak pernah tiba di v1)
-        print("[*] Cek IsThere RUMAH sesudah Create ...")
+        P.vlog("[*] Cek IsThere RUMAH sesudah Create ...")
         after = do_is_there_house()
         answered = after is not None
         if not (after and after["exists"] is True):
-            print("[*] IsThere-sesudah belum True — ulang sekali (3 dtk) ...")
+            P.vlog("[*] IsThere-sesudah belum True — ulang sekali (3 dtk) ...")
             time.sleep(3)
             after = do_is_there_house()
             answered = answered or after is not None
@@ -246,6 +246,8 @@ async def like_house_once(session, bot, target_uuid):
 
 
 async def main():
+    P.VERBOSE = True  # probe manual selalu detail
+    L.QUIET = False
     target = (sys.argv[1] if len(sys.argv) > 1 else
               os.getenv("TARGET_UUID", TARGET_DEFAULT))
     print(f"[*] Target like RUMAH (UUID pemilik): {target}")
