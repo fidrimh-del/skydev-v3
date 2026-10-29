@@ -9,8 +9,10 @@ Versi ini DIPANGKAS untuk kecepatan dibanding probe:
   - Tanpa tes friends-kosong di jalur cepat (langsung search;
     kalau kosong, fallback: friends-kosong dulu lalu search lagi).
   - Tanpa tes UDP, tanpa Supabase, tanpa dump frame verbose.
-  - Jendela dipersingkat: connect 6 dtk, login 5 dtk, join 3 dtk
-    per room, settle 2 dtk, search 12 dtk.
+  - Jendela early-exit (2026-10-29): connect/login/search berhenti
+    SEGERA saat frame target tiba (cap tetap: connect 6, login 5,
+    join 3 dtk per room, search 12 dtk); settle 2 dtk DIHAPUS
+    (eksperimen skydev-test: 1,4-1,9 dtk vs baseline 27,2 dtk).
   - Satu varian query saja (server terbukti cocok case-insensitive,
     jadi kapitalisasi input tidak masalah).
   - Log ringkas + blok HASIL + waktu total + satu baris log
@@ -156,7 +158,8 @@ def tcp_connect(host, port):
         print(f"[-] Gagal kirim Connect: {e}")
         s.close()
         return None, None
-    resp, closed, pongs = read_frames(s, 6)
+    resp, closed, pongs, _ = read_until(
+        s, lambda fr: any(len(p) >= 5 and p[0] == 0x03 for p in fr), 6)
     pid = None
     for p in resp:
         if len(p) >= 5 and p[0] == 0x03:
@@ -342,6 +345,52 @@ def read_frames(sock, seconds):
     return frames, closed, pongs
 
 
+def read_until(sock, pred, cap, slice_s=0.25):
+    """Baca sampai pred(frames) True atau cap detik habis.
+    Sama seperti read_frames (termasuk auto-pong), tapi BERHENTI
+    SEGERA saat frame target tiba — jendela tetap lama selalu
+    dihabiskan penuh meski jawaban sudah tiba di 0,1-0,3 detik
+    (terbukti eksperimen skydev-test 2026-10-29: 27,2 -> 1,4 dtk).
+    Kembalikan (frames, closed, pongs, hit)."""
+    deadline = time.time() + cap
+    buf = bytearray()
+    frames = []
+    closed = False
+    pongs = 0
+    sock.settimeout(slice_s)
+    while time.time() < deadline:
+        try:
+            chunk = sock.recv(65536)
+        except socket.timeout:
+            if pred(frames):
+                break
+            continue
+        except Exception:
+            break
+        if chunk == b"":
+            closed = True
+            break
+        buf += chunk
+        while len(buf) >= 4:
+            ln = struct.unpack(">I", buf[:4])[0]
+            if ln > 262144:
+                return frames, closed, pongs, pred(frames)
+            if len(buf) - 4 < ln:
+                break
+            fr = bytes(buf[4:4 + ln])
+            del buf[:4 + ln]
+            frames.append(fr)
+            if fr == b"\x01":
+                try:
+                    sock.sendall(struct.pack(">I", 1) + b"\x02")
+                    pongs += 1
+                except Exception:
+                    pass
+        if pred(frames):
+            break
+    return frames, closed, pongs, pred(frames)
+
+
 async def login_and_allocate(email, password, device_id, session):
     device_info = OrderedDict([
         ("userAgent", ""), ("platform", "DESKTOP"), ("system", "WindowsPlayer"),
@@ -460,7 +509,8 @@ async def lookup_once(session, bot, name):
         print(f"[-] Gagal kirim event login: {e}")
         s.close()
         return None
-    resp, closed, pongs = read_frames(s, 5)
+    resp, closed, pongs, _ = read_until(
+        s, lambda fr: scan_login_window(fr)[1] is not None, 5)
     tbugv, room = scan_login_window(resp)
     print(f"[*] Login: tbugv={'YA' if tbugv else 'tidak'}, "
           f"auto-join={'room ' + str(room) if room is not None else 'tidak'}")
@@ -475,10 +525,9 @@ async def lookup_once(session, bot, name):
         s.close()
         return None
     print(f"[+] Bergabung room {room}.")
-    resp, closed, pongs = read_frames(s, 2)
-    if closed:
-        s.close()
-        return None
+    # Settle 2 dtk DIHAPUS (eksperimen: search langsung sesudah join
+    # tetap berhasil, 0,3 dtk). Variabel `closed` di bawah merujuk
+    # ke hasil jendela login (False bila sampai di sini).
 
     def do_search():
         frame = build_room_event_varint("friends", build_search_protobuf(name))
@@ -487,7 +536,14 @@ async def lookup_once(session, bot, name):
             s.sendall(frame)
         except Exception:
             return None
-        resp, closed, _ = read_frames(s, 12)
+        def _pred(fr):
+            for p in fr:
+                dec = decode_search_result(p)
+                if dec is not None and dec["success"] and dec["uuid"]:
+                    return True
+            return False
+
+        resp, closed, _, _ = read_until(s, _pred, 12)
         for p in resp:
             dec = decode_search_result(p)
             if dec is not None:
