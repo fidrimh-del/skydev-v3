@@ -10,6 +10,7 @@ import asyncio
 from collections import OrderedDict
 from curl_cffi.requests import AsyncSession
 import urllib3
+import lookup_uuid as L
 import string
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -202,6 +203,12 @@ async def main():
     print(f"[*] SKYDEV V3 CLOUD: Memulai proses produksi {target_accounts} akun ke Supabase...")
         
     engine = PKXDSkydevRegisterEngine()
+
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    L.apply_panel_versions()
+    engine.version = L.VERSION
+    engine.game_protocol = L.GAME_PROTOCOL
     semaphore = asyncio.Semaphore(5) 
     
     success_count = 0
