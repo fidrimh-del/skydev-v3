@@ -133,16 +133,6 @@ def fresh_bots(pool, tried, history):
     return out
 
 
-def next_limit(limit, deficit, nol=False):
-    """Limit fetch ronde berikutnya. Bila ronde sebelumnya 0 terkirim,
-    melonjak agresif (ke 1000, lalu plafon 5000) supaya job menjangkau
-    stok bot dalam (53 ribu), bukan hanya ~200 bot pertama; bila tidak,
-    membesar pelan sejumlah deficit + cadangan."""
-    if nol:
-        return 5000 if limit >= 1000 else 1000
-    return min(limit + deficit + 30, 5000)
-
-
 # ---------------------------------------------------------------- Supabase panel
 def _supabase():
     return (os.getenv("SUPABASE_URL", "").rstrip("/"),
@@ -323,46 +313,40 @@ def main():
             return 1
         target_uuid = hit["uuid"]
 
-    # 3. Ronde 1: daftar bot resmi (limit = jumlah + cadangan).
-    limit = min(jumlah + 30, 5000)
-    pool = P.get_bots(target_uuid, limit=limit)
-    if not pool:
-        print("[!] Tidak ada bot untuk target ini — berhenti.")
-        return 1
-    print(f"[*] {len(pool)} bot tersedia untuk job ini (limit {limit}).")
-
-    # 4. Histori massal (tanpa sesi) — dibaca sekali di awal; baris
+    # 3. Histori massal (tanpa sesi) — dibaca sekali di awal; baris
     #    yang ditulis selama job menyangkut bot yang sudah tried.
     sudah = history_set(target_uuid)
     if sudah is None:
         print("[*] Histori tidak dipakai (fallback IsThere per bot).")
 
-    # 5. Ronde jalan paralel (maks 50). Selama terkirim < jumlah dan
-    #    masih ada bot fresh, ambil lagi (replenishment): limit fetch
-    #    membesar sejumlah deficit + cadangan; bot yang sudah tried
-    #    dan yang ada di histori tidak ditugaskan lagi. Tugas yang
-    #    antre dan mendapati target sudah terpenuhi lewati sendiri
+    # 4. Ronde jalan paralel (maks 50) dengan PAGING: tiap ronde
+    #    mengambil SATU halaman (5000 bot) berikutnya dari urutan RPC.
+    #    Bot yang sudah terpakai untuk target ini menumpuk di urutan
+    #    depan — paging melompati mereka halaman demi halaman sampai
+    #    ke bot fresh di kedalaman pool (puluhan ribu). Tidak ada lagi
+    #    plafon 5000/batas 4 ronde: loop berhenti bila target terpenuhi
+    #    ATAU halaman kosong (pool benar-benar habis). Bot yang sudah
+    #    tried dan yang ada di histori tidak ditugaskan lagi. Tugas
+    #    yang antre dan mendapati target sudah terpenuhi lewati sendiri
     #    (murah, tanpa sesi).
+    HALAMAN = 5000
     state = {"lock": threading.Lock(), "jumlah": jumlah,
              "sent": 0, "skipped": 0,
              "tried": set(), "failed_map": {}, "history_seen": set(),
              "noanswer": set()}
     nomor = 0
-    maks_ronde = 4
-    sebelum = 0  # terkirim sebelum ronde berjalan (untuk deteksi 0 ronde)
-    for ronde in range(1, maks_ronde + 1):
-        if ronde > 1:
-            deficit = jumlah - state["sent"]
-            nol = (state["sent"] == sebelum)
-            limit = next_limit(limit, deficit, nol)
-            pool = P.get_bots(target_uuid, limit=limit)
-            if nol:
-                print(f"[*] RONDE {ronde}: fetch AGRESIF (ronde sebelumnya "
-                      f"0 terkirim, limit {limit}) -> {len(pool)} bot.")
-            else:
-                print(f"[*] RONDE {ronde}: fetch ulang (limit {limit}) -> "
-                      f"{len(pool)} bot.")
-        sebelum = state["sent"]
+    ronde = 0
+    offset = 0
+    while True:
+        if state["sent"] >= jumlah:
+            break
+        ronde += 1
+        pool = P.get_bots_page(target_uuid, limit=HALAMAN, offset=offset)
+        if not pool:
+            print(f"[*] RONDE {ronde}: pool habis pada offset {offset} — "
+                  f"tidak ada bot tersisa untuk target ini.")
+            break
+        offset += HALAMAN
         if sudah is not None:
             baru_histori = {b["email"] for b in pool
                             if b["email"] not in state["tried"]
@@ -370,8 +354,9 @@ def main():
             state["history_seen"] |= baru_histori
         tugas = fresh_bots(pool, state["tried"], sudah)
         if not tugas:
-            print(f"[*] RONDE {ronde}: tidak ada bot fresh tersisa.")
-            break
+            print(f"[*] RONDE {ronde}: {len(pool)} bot di halaman ini "
+                  f"semua sudah tried/berhistori — lanjut halaman berikut.")
+            continue
         print(f"[*] RONDE {ronde}: {len(tugas)} bot fresh jalan "
               f"(paralel {max_paralel}).")
         nomor = jalankan_tugas(tugas, target_uuid, state, max_paralel,
@@ -379,10 +364,8 @@ def main():
         print(f"[*] RONDE {ronde} selesai: terkirim={state['sent']} "
               f"dilewati_sesi={state['skipped']} "
               f"gagal={len(state['failed_map'])}")
-        if state["sent"] >= jumlah:
-            break
 
-    # 6. Ronde retry terakhir: bila masih kurang, coba ulang sekali
+    # 5. Ronde retry terakhir: bila masih kurang, coba ulang sekali
     #    HANYA bot yang sempat menjawab IsThere (gagal verifikasi /
     #    transient). Bot no-answer TIDAK diulang (bukti: 2/168 lolos)
     #    — mereka tetap dihitung Gagal di HASIL, hanya tidak dibakar
