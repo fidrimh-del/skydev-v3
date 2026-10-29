@@ -44,7 +44,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lookup_uuid import lookup_once, probe_bot  # noqa: E402
+from lookup_uuid import lookup_once, probe_bot, apply_panel_versions  # noqa: E402
 from curl_cffi.requests import AsyncSession  # noqa: E402
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -246,6 +246,10 @@ async def main():
     if not SUPABASE_URL or not SERVICE_KEY:
         print("[!] SUPABASE_URL / SUPABASE_SERVICE_KEY wajib diisi (Secrets).")
         return 1
+    # Versi game/protokol dari panel (tabel app_settings; butuh
+    # PANEL_SUPABASE_URL/KEY di env workflow). Fallback bawaan bila
+    # tak tersedia — poller tetap jalan.
+    apply_panel_versions()
     notif_failed = False
     orders = sb_req(
         "GET",
