@@ -16,8 +16,11 @@ Versi ini DIPANGKAS untuk kecepatan dibanding probe:
     join 3 dtk per room, search 12 dtk); settle 2 dtk DIHAPUS
     (eksperimen skydev-test: 1,4-1,9 dtk vs baseline 27,2 dtk).
   - Join DIHAPUS dari jalur cepat (2026-10-29, skip-join test):
-    search langsung sesudah login; join (auto/JoinRoom) hanya
-    fallback bila search langsung kosong.
+    search langsung sesudah login. Urutan fallback (v2):
+    tunggu 6 dtk + search ulang -> join + search -> friends-kosong
+    + search (join/friends-kosong 0 kasus penyelamatan di v2, hanya
+    jaring pengaman terakhir; server lambat 174.138.71.188 cukup
+    ditunggu).
   - Satu varian query saja (server terbukti cocok case-insensitive,
     jadi kapitalisasi input tidak masalah).
   - Log ringkas + blok HASIL + waktu total + satu baris log
@@ -549,8 +552,20 @@ async def lookup_once(session, bot, name):
     print(f"[*] Cari: {name} ...")
     hit, closed = do_search()
     if hit is None and not closed:
-        # Fallback 1: join dulu lalu search ulang (sesi yang sama).
-        print("[*] Search langsung kosong — fallback: join lalu search lagi.")
+        # Fallback 1 (v2: server lambat cukup ditunggu): tunggu 6 dtk
+        # tanpa aksi — hasil pertama bisa tiba terlambat — lalu search ulang.
+        print("[*] Search langsung kosong — fallback: tunggu 6 dtk lalu search ulang.")
+        resp, closed, _ = read_frames(s, 6)
+        for p in resp:
+            dec = decode_search_result(p)
+            if dec is not None and dec["success"] and dec["uuid"]:
+                hit = dec
+                break
+        if hit is None and not closed:
+            hit, closed = do_search()
+    if hit is None and not closed:
+        # Fallback 2: join dulu lalu search ulang (sesi yang sama).
+        print("[*] Search masih kosong — fallback: join lalu search lagi.")
         resp, closed, pongs, _ = read_until(
             s, lambda fr: scan_login_window(fr)[1] is not None, 5)
         tbugv, room = scan_login_window(resp)
@@ -572,7 +587,7 @@ async def lookup_once(session, bot, name):
                 else:
                     print("[!] Join gagal di instance ini.")
     if hit is None and not closed:
-        # Fallback 2: friends-kosong dulu (ambil daftar), lalu search lagi.
+        # Fallback 3: friends-kosong dulu (ambil daftar), lalu search lagi.
         print("[*] Search masih kosong — fallback: friends-kosong lalu search lagi.")
         try:
             s.sendall(build_room_event_varint("friends", b""))
