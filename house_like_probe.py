@@ -129,12 +129,14 @@ def history_put_house(bot_email, target_uuid, source="probe"):
 
 async def like_house_once(session, bot, target_uuid):
     """Satu percobaan penuh (tanpa cek histori — pemanggil yang mengecek
-    histori dulu). TANPA JOIN + POLA LIKE-POST (diadopsi dari probe profil
-    2026-10-29): tanpa IsThere-sebelum — bot non-histori langsung Create
-    (percaya filter histori Supabase pemanggil). IsThere-sesudah
+    histori dulu). POLA LIKE-POST (tanpa IsThere-sebelum — bot non-histori
+    langsung Create, percaya filter histori Supabase pemanggil) TAPI
+    DENGAN JOIN: terbukti 2026-10-29 pola tanpa-join (yang sah untuk
+    like-profil) membuat IsThere-rumah selalu False — server butuh bot
+    masuk room agar Create like rumah tercatat. IsThere-sesudah
     DIPERTAHANKAN sebagai bukti kirim (pengganti HTTP 200; Create TCP
     tidak pernah dibalas, jadi tanpa ini "terkirim" = klaim tanpa bukti).
-    Alur: login -> Create SEKALI (LikeType=0) -> jeda 2 dtk ->
+    Alur: login -> JOIN room -> Create SEKALI (LikeType=0) -> jeda 2 dtk ->
     IsThere-sesudah (LikeType=0) (+1x ulang kalau belum True).
     Create SEKALI per sesi penuh (aturan keras terpenuhi penuh).
     Histori ditulis ke house_like_history, BUKAN profile_like_history
@@ -142,7 +144,7 @@ async def like_house_once(session, bot, target_uuid):
     Kembalikan dict (dengan flag "answered": True bila ada satu pun
     jawaban IsThere di sesi ini — pemanggil memakai ini untuk memilah
     bot no-answer yang tidak ikut ronde retry) atau None kalau gagal
-    di tengah jalan (login/konek/alokasi)."""
+    di tengah jalan (login/konek/alokasi/join)."""
     user_jwt, alloc = await L.login_and_allocate(
         bot["email"], bot["password"], bot["device_id"], session)
     if not alloc:
@@ -166,6 +168,33 @@ async def like_house_once(session, bot, target_uuid):
         print(f"[-] Gagal kirim event login: {e}")
         s.close()
         return None
+
+    # JOIN WAJIB untuk like rumah (tanpa ini IsThere-sesudah selalu
+    # False — terbukti di run 40870370181). Diadopsi dari versi lama
+    # yang terbukti (probe run 40657191412, false->true).
+    _jstate = {"room": None}
+
+    def _login_pred(fr):
+        t, r = L.scan_login_window([fr])
+        if r is not None:
+            _jstate["room"] = r
+        return _jstate["room"] is not None
+
+    fr, closed = reader.read_until(_login_pred, 5)
+    print(f"[*] Login: auto-join="
+          f"{'room ' + str(_jstate['room']) if _jstate['room'] is not None else 'tidak'}")
+    if closed:
+        print("[!] Koneksi ditutup setelah login.")
+        s.close()
+        return None
+    room = _jstate["room"]
+    if room is None:
+        room = L.tcp_join_only(s, gsid)
+    if room is None:
+        print("[!] Join gagal di instance ini.")
+        s.close()
+        return None
+    print(f"[+] Bergabung room {room}.")
 
     def do_is_there_house():
         frame = L.build_room_event_varint(
