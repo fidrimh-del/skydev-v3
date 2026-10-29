@@ -226,6 +226,24 @@ def get_bots(target_uuid, limit=8):
     return bots
 
 
+def get_bots_page(target_uuid, limit=5000, offset=0):
+    """Satu halaman bot dari urutan RPC get_fresh_bots.
+
+    RPC tidak mendukung offset, jadi paging dilakukan di klien:
+    fetch limit=offset+limit lalu potong [offset:offset+limit].
+    Dengan begini job bisa menembus SELURUH pool (puluhan ribu bot),
+    bukan hanya 5000 terdepan — bot yang sudah pernah like target
+    (menumpuk di urutan depan) dilewati halaman demi halaman.
+    Mengembalikan list (bisa kosong bila offset melewati akhir pool).
+    """
+    if limit <= 0:
+        return []
+    if offset < 0:
+        offset = 0
+    rows = get_bots(target_uuid, limit=offset + limit)
+    return rows[offset:offset + limit]
+
+
 def history_get(bot_email, target_uuid):
     """True = pasangan sudah tercatat pernah like (lewati tanpa sesi).
     False = belum tercatat. None = histori tidak bisa dipakai
