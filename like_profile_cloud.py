@@ -52,7 +52,7 @@ KELUAR (exit code):
 
 CATATAN JUJUR TENTANG WAKTU:
   - Waktu KERJA script: ~5 detik per like baru (satu worker: login +
-    Create + jeda 2 detik + IsThere-sesudah); dengan 20 worker
+    Create + jeda 2 detik + IsThere-sesudah); dengan 50 worker
     paralel, 100 like ≈ 100/50 x 5 detik ≈ 10 detik + overhead login
     (bukan 100 x 5 detik). Bot gagal sesi-mati: ~16 detik (2 instance
     x cap IsThere 8 detik) bila tanpa jawaban sama sekali.
