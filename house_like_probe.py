@@ -23,8 +23,9 @@ PERBEDAAN PENTING vs probe profil (jangan dilanggar):
     dengan fallback IsThere per bot (lebih lambat untuk bot yang
     sudah pernah like, tapi tetap benar).
   - Create dikirim SEKALI per bot (aksi tulis; 2x berisiko +2).
-  - Verifikasi = IsThere dengan LikeType=0 sebelum & sesudah.
-    (IsThere query boleh dikirim 2x, seperti probe profil.)
+  - Verifikasi = IsThere-sesudah dengan LikeType=0 SAJA (pola
+    like-post, diadopsi dari probe profil 2026-10-29 — tanpa
+    IsThere-sebelum). IsThere query boleh dikirim 2x.
   - Kredensial TIDAK PERNAH dicetak ke log (hanya "Bot i/N").
   - Mesin login/TCP dipakai ulang dari lookup_uuid.py (terbukti)
     + pembaca frame & decoder dari like_profile_probe.py v2.
@@ -127,10 +128,21 @@ def history_put_house(bot_email, target_uuid, source="probe"):
 
 
 async def like_house_once(session, bot, target_uuid):
-    """Satu percobaan penuh: login -> join -> IsThere(House)-sebelum
-    -> Create(House) SEKALI -> jeda 2 dtk -> IsThere(House)-sesudah
-    (+1x ulang kalau belum True). Kembalikan dict atau None kalau
-    gagal di tengah jalan."""
+    """Satu percobaan penuh (tanpa cek histori — pemanggil yang mengecek
+    histori dulu). TANPA JOIN + POLA LIKE-POST (diadopsi dari probe profil
+    2026-10-29): tanpa IsThere-sebelum — bot non-histori langsung Create
+    (percaya filter histori Supabase pemanggil). IsThere-sesudah
+    DIPERTAHANKAN sebagai bukti kirim (pengganti HTTP 200; Create TCP
+    tidak pernah dibalas, jadi tanpa ini "terkirim" = klaim tanpa bukti).
+    Alur: login -> Create SEKALI (LikeType=0) -> jeda 2 dtk ->
+    IsThere-sesudah (LikeType=0) (+1x ulang kalau belum True).
+    Create SEKALI per sesi penuh (aturan keras terpenuhi penuh).
+    Histori ditulis ke house_like_history, BUKAN profile_like_history
+    (counter terpisah — menulis ke histori profil akan meracuninya).
+    Kembalikan dict (dengan flag "answered": True bila ada satu pun
+    jawaban IsThere di sesi ini — pemanggil memakai ini untuk memilah
+    bot no-answer yang tidak ikut ronde retry) atau None kalau gagal
+    di tengah jalan (login/konek/alokasi)."""
     user_jwt, alloc = await L.login_and_allocate(
         bot["email"], bot["password"], bot["device_id"], session)
     if not alloc:
@@ -154,29 +166,6 @@ async def like_house_once(session, bot, target_uuid):
         print(f"[-] Gagal kirim event login: {e}")
         s.close()
         return None
-    state = {"room": None}
-
-    def login_pred(fr):
-        t, r = L.scan_login_window([fr])
-        if r is not None:
-            state["room"] = r
-        return state["room"] is not None
-
-    fr, closed = reader.read_until(login_pred, 5)
-    print(f"[*] Login: auto-join="
-          f"{'room ' + str(state['room']) if state['room'] is not None else 'tidak'}")
-    if closed:
-        print("[!] Koneksi ditutup setelah login.")
-        s.close()
-        return None
-    room = state["room"]
-    if room is None:
-        room = L.tcp_join_only(s, gsid)
-    if room is None:
-        print("[!] Join gagal di instance ini.")
-        s.close()
-        return None
-    print(f"[+] Bergabung room {room}.")
 
     def do_is_there_house():
         frame = L.build_room_event_varint(
@@ -196,33 +185,35 @@ async def like_house_once(session, bot, target_uuid):
               f"like_type={dec['like_type']} error={dec['error']!r}")
         return dec
 
-    print("[*] Cek IsThere RUMAH (sudah pernah like rumah?) ...")
-    before = do_is_there_house()
-    if before and before["exists"] is True:
-        print("[!] Bot ini SUDAH pernah like RUMAH target — catat "
-              "histori rumah & lewati.")
-        history_put_house(bot["email"], target_uuid)
-        s.close()
-        return {"already": True}
-    print("[*] Kirim Create like RUMAH (SEKALI, LikeType=0) ...")
-    try:
-        s.sendall(L.build_room_event_varint(
-            "like", P.build_like_protobuf(0, target_uuid, LIKE_TYPE_HOUSE)))
-    except Exception:
-        s.close()
-        return None
-    time.sleep(2)  # beri server waktu mencatat (tanpa menunggu balasan
-    # Create yang terbukti tidak pernah tiba dalam 12 detik di v1)
-    print("[*] Cek IsThere RUMAH sesudah Create ...")
-    after = do_is_there_house()
-    if not (after and after["exists"] is True):
-        print("[*] IsThere-sesudah belum True — ulang sekali (3 dtk) ...")
-        time.sleep(3)
+    def do_create_verify():
+        """Kirim Create SEKALI (LikeType=0), jeda 2 dtk,
+        IsThere-sesudah (LikeType=0) (+1x ulang sesudah jeda 3 dtk).
+        Kembalikan (after_dec, answered_bool)."""
+        print("[*] Kirim Create like RUMAH (SEKALI, LikeType=0) ...")
+        try:
+            s.sendall(L.build_room_event_varint(
+                "like", P.build_like_protobuf(0, target_uuid, LIKE_TYPE_HOUSE)))
+        except Exception:
+            return None, False
+        time.sleep(2)  # beri server waktu mencatat (tanpa menunggu
+        # balasan Create yang terbukti tidak pernah tiba di v1)
+        print("[*] Cek IsThere RUMAH sesudah Create ...")
         after = do_is_there_house()
+        answered = after is not None
+        if not (after and after["exists"] is True):
+            print("[*] IsThere-sesudah belum True — ulang sekali (3 dtk) ...")
+            time.sleep(3)
+            after = do_is_there_house()
+            answered = answered or after is not None
+        return after, answered
+
+    # Pola like-post: tanpa IsThere-sebelum — langsung Create.
+    after, answered = do_create_verify()
     s.close()
     if after and after["exists"] is True:
         history_put_house(bot["email"], target_uuid)
-    return {"already": False, "before": before, "after": after}
+    return {"already": False, "before": None, "after": after,
+            "answered": answered}
 
 
 async def main():
