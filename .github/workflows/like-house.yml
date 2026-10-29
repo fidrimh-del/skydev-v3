@@ -24,9 +24,9 @@ on:
         required: true
         default: "10"
       max_paralel:
-        description: "Worker bersamaan (maks 20)"
+        description: "Worker bersamaan (maks 50)"
         required: false
-        default: "20"
+        default: "50"
 jobs:
   like_rumah:
     runs-on: ubuntu-latest
