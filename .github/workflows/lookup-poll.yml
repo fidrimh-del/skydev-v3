@@ -64,6 +64,8 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SHOP_SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SHOP_SUPABASE_SERVICE_KEY }}
+          PANEL_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          PANEL_SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           PROBE_EMAIL: ${{ secrets.PROBE_EMAIL }}
           PROBE_PASSWORD: ${{ secrets.PROBE_PASSWORD }}
           PROBE_DEVICE_ID: ${{ secrets.PROBE_DEVICE_ID }}
