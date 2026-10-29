@@ -56,7 +56,7 @@ CATATAN JUJUR TENTANG COUNTER (pisahkan dua hal ini):
     (50 detik -> ~15 detik per like baru; ~0,5 detik per pasangan
     yang sudah ada di histori).
   - Untuk pesanan massal nanti, langkah berikutnya (SUDAH dibangun:
-    like_profile_cloud.py, paralel maks 20) — 100 like dari
+    like_profile_cloud.py, paralel maks 50) — 100 like dari
     ~80 menit berurutan menjadi ~2 menit (terukur: 18 like dalam
     86 detik termasuk resolusi). Bukan bagian v2 ini.
 
