@@ -24,7 +24,7 @@ CARA PAKAI:
                 (dicari UUID-nya dulu lewat satu sesi lookup
                 sebelum worker jalan).
     JUMLAH      jumlah like rumah BARU yang diminta.
-    MAX_PARALEL jumlah worker bersamaan, default 20, dijepit 1..50.
+    MAX_PARALEL jumlah worker bersamaan, default 50, dijepit 1..50.
   Di GitHub Actions: pakai like-house.yml (input target/jumlah/
   max_paralel). Di dashboard panel: kartu "Like rumah" (tab
   like-house) memanggil workflow itu lewat executeAndWait yang
@@ -110,7 +110,7 @@ def is_uuid(s):
     return bool(UUID_RE.match((s or "").strip()))
 
 
-def clamp_paralel(n, default=20):
+def clamp_paralel(n, default=50):
     try:
         v = int(n)
     except (TypeError, ValueError):
@@ -130,7 +130,7 @@ def parse_args(argv):
         return None
     if not target or jumlah < 1:
         return None
-    max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 20)
+    max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 50)
     return target, jumlah, max_paralel
 
 
@@ -317,7 +317,7 @@ def main():
         print("Pakai: python like_house_cloud.py <TARGET> <JUMLAH> "
               "[MAX_PARALEL]")
         print("  TARGET = UUID pemilik rumah atau Nama#Kode; "
-              "JUMLAH >= 1; MAX_PARALEL dijepit 1..50 (default 20).")
+              "JUMLAH >= 1; MAX_PARALEL dijepit 1..50 (default 50).")
         return 1
     target_in, jumlah, max_paralel = parsed
     # Versi game/protokol dari panel (tabel app_settings); fallback
