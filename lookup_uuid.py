@@ -1,7 +1,7 @@
 """lookup_uuid.py — Ambil UUID pemain PK XD dari nama (CEPAT).
 
 Jalur yang sudah TERBUKTI: login FSTR -> allocation ->
-TCP connect -> Event "login" (USER_SESSION JWT + 1.93.3) ->
+TCP connect -> Event "login" (USER_SESSION JWT + 1.93.4) ->
 LANGSUNG RoomEvent "friends" + protobuf SearchFriend (EventId=7)
 -> search_friend_result -> UUID. Join TIDAK diperlukan
 (skip-join test 2026-10-29: search dibalas tanpa room); join hanya
@@ -68,7 +68,7 @@ APP_SECRET = os.getenv("FSTR_APP_SECRET") or "jWS5aLZacNVFx6PAxpXq2g4o"
 ACCOUNT_URL = "https://account.faster.aftvrsys.com"
 LOBBY_URL = "https://pkxd-lobby.aftvrsys.com"
 GAME_PROTOCOL = "1.93.0"
-VERSION = "1.93.3"
+VERSION = "1.93.4"
 
 HEADERS_BASE = {
     "User-Agent": "UnityPlayer/2022.3.62f3 (UnityWebRequest/1.0, libcurl/8.10.1-DEV)",
@@ -139,7 +139,7 @@ def build_event_varint(event_name, data):
 
 def build_login_protobuf(user_token):
     """Protobuf event login persis game: field 1 (0x0a) =
-    USER_SESSION JWT, field 2 (0x12) = versi game '1.93.3'."""
+    USER_SESSION JWT, field 2 (0x12) = versi game '1.93.4'."""
     tb = user_token.encode("utf-8")
     vb = VERSION.encode("utf-8")
     return b"\x0a" + varint(len(tb)) + tb + b"\x12" + varint(len(vb)) + vb
