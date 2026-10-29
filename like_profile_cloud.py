@@ -12,7 +12,7 @@ CARA PAKAI:
     TARGET      UUID (36 karakter) atau Nama#Kode (dicari UUID-nya dulu
                 lewat satu sesi lookup sebelum worker jalan).
     JUMLAH      jumlah like BARU yang diminta.
-    MAX_PARALEL jumlah worker bersamaan, default 20, dijepit 1..20.
+    MAX_PARALEL jumlah worker bersamaan, default 50, dijepit 1..50.
   Di GitHub Actions: pakai like-profile.yml (input target/jumlah/
   max_paralel). Di dashboard panel: kartu "Like profil" (tab Like)
   memanggil workflow itu lewat executeAndWait yang sudah ada.
@@ -53,7 +53,7 @@ KELUAR (exit code):
 CATATAN JUJUR TENTANG WAKTU:
   - Waktu KERJA script: ~5 detik per like baru (satu worker: login +
     Create + jeda 2 detik + IsThere-sesudah); dengan 20 worker
-    paralel, 100 like ≈ 100/20 x 5 detik ≈ 25 detik + overhead login
+    paralel, 100 like ≈ 100/50 x 5 detik ≈ 10 detik + overhead login
     (bukan 100 x 5 detik). Bot gagal sesi-mati: ~16 detik (2 instance
     x cap IsThere 8 detik) bila tanpa jawaban sama sekali.
   - Counter profil di game adalah cache per sesi: angka tampil baru
@@ -90,7 +90,7 @@ def is_uuid(s):
     return bool(UUID_RE.match((s or "").strip()))
 
 
-def clamp_paralel(n, default=20):
+def clamp_paralel(n, default=50):
     try:
         v = int(n)
     except (TypeError, ValueError):
@@ -110,7 +110,7 @@ def parse_args(argv):
         return None
     if not target or jumlah < 1:
         return None
-    max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 20)
+    max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 50)
     return target, jumlah, max_paralel
 
 
@@ -295,7 +295,7 @@ def main():
         print("Pakai: python like_profile_cloud.py <TARGET> <JUMLAH> "
               "[MAX_PARALEL]")
         print("  TARGET = UUID atau Nama#Kode; JUMLAH >= 1; "
-              "MAX_PARALEL dijepit 1..20 (default 20).")
+              "MAX_PARALEL dijepit 1..50 (default 50).")
         return 1
     target_in, jumlah, max_paralel = parsed
     # Versi game/protokol dari panel (tabel app_settings); fallback
@@ -337,7 +337,7 @@ def main():
     if sudah is None:
         print("[*] Histori tidak dipakai (fallback IsThere per bot).")
 
-    # 5. Ronde jalan paralel (maks 20). Selama terkirim < jumlah dan
+    # 5. Ronde jalan paralel (maks 50). Selama terkirim < jumlah dan
     #    masih ada bot fresh, ambil lagi (replenishment): limit fetch
     #    membesar sejumlah deficit + cadangan; bot yang sudah tried
     #    dan yang ada di histori tidak ditugaskan lagi. Tugas yang
