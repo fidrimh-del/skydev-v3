@@ -50,6 +50,8 @@ import base64
 import socket
 import struct
 import time
+import urllib.request
+import urllib.error
 from collections import OrderedDict, Counter
 from curl_cffi.requests import AsyncSession
 
@@ -82,6 +84,55 @@ HEADERS_BASE = {
 
 UUID_RE = re.compile(rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 FLAG_RE = re.compile(rb"friend|search|error|fail|denied", re.IGNORECASE)
+
+
+def get_panel_versions():
+    """(game_version, protocol_version) dari tabel app_settings di DB
+    panel (diubah dari dashboard, tanpa edit GitHub). Kembalikan
+    (None, None) bila env/tabel tak tersedia — pemanggil memakai nilai
+    bawaan (job tetap jalan, tidak mati)."""
+    url = (os.getenv("PANEL_SUPABASE_URL")
+           or os.getenv("SUPABASE_URL", "")).rstrip("/")
+    key = (os.getenv("PANEL_SUPABASE_SERVICE_KEY")
+           or os.getenv("SUPABASE_SERVICE_KEY", ""))
+    if not url or not key:
+        return None, None
+    try:
+        req = urllib.request.Request(
+            url + "/rest/v1/app_settings?select=key,value"
+            "&key=in.(game_version,protocol_version)",
+            headers={"apikey": key, "Authorization": "Bearer " + key},
+            method="GET")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            rows = json.loads(r.read().decode("utf-8"))
+        gv = pv = None
+        for row in rows or []:
+            v = (row.get("value") or "").strip() or None
+            if row.get("key") == "game_version":
+                gv = v
+            elif row.get("key") == "protocol_version":
+                pv = v
+        return gv, pv
+    except Exception as e:
+        print(f"[!] Baca app_settings gagal ({e}) -> pakai versi bawaan "
+              f"({VERSION}/{GAME_PROTOCOL}).")
+        return None, None
+
+
+def apply_panel_versions():
+    """Terapkan versi dari DB panel (bila ada) ke modul ini, termasuk
+    rebuild HEADERS_BASE yang dibangun sekali saat import (override
+    variabel saja TIDAK cukup). Kembalikan (VERSION, GAME_PROTOCOL)
+    yang aktif. Dipanggil sekali di awal main() setiap script."""
+    global GAME_PROTOCOL, VERSION, HEADERS_BASE
+    gv, pv = get_panel_versions()
+    if gv:
+        VERSION = gv
+    if pv:
+        GAME_PROTOCOL = pv
+        HEADERS_BASE = {**HEADERS_BASE, "X-Protocol-Version": pv}
+    print(f"[*] Versi aktif: game={VERSION} protokol={GAME_PROTOCOL}")
+    return VERSION, GAME_PROTOCOL
 
 
 def compute_signature(method, path, body_bytes):
