@@ -81,6 +81,16 @@ import lookup_uuid as L
 TARGET_DEFAULT = "aae2efe1-1abb-48c2-8799-ea192692a49c"  # DesertEagle#431
 LIKE_TYPE_PLAYER = 1
 
+# Mode ringkas: False = log per-bot disembunyikan (untuk job massal di
+# cloud). True = semua detail per-bot tampil (untuk probe manual).
+# Bisa juga via env LIKE_VERBOSE=1. main() probe selalu mengeset True.
+VERBOSE = os.getenv("LIKE_VERBOSE", "0") == "1"
+
+
+def vlog(*args, **kwargs):
+    if VERBOSE:
+        print(*args, **kwargs)
+
 # Status histori: True = tabel ada & bisa dipakai; False = belum ada /
 # error (fallback ke IsThere, tanpa histori). None = belum dicek.
 HISTORY_OK = None
@@ -330,14 +340,14 @@ async def like_once(session, bot, target_uuid):
     user_jwt, alloc = await L.login_and_allocate(
         bot["email"], bot["password"], bot["device_id"], session)
     if not alloc:
-        print("[-] Allocation gagal.")
+        vlog("[-] Allocation gagal.")
         return None
     host, port = L.find_host_port(alloc)
     gsid = alloc.get("gameServerId", "")
     suffix = gsid.rsplit("::", 1)[1] if "::" in gsid else "?"
-    print(f"[*] Server: {host}:{port} (room suffix {suffix})")
+    vlog(f"[*] Server: {host}:{port} (room suffix {suffix})")
     if not host or not port:
-        print("[-] Host/port tidak ketemu di allocation.")
+        vlog("[-] Host/port tidak ketemu di allocation.")
         return None
     s, pid = L.tcp_connect(host, port)
     if s is None:
@@ -345,9 +355,9 @@ async def like_once(session, bot, target_uuid):
     reader = FrameReader(s)
     try:
         s.sendall(L.build_login_frame(user_jwt))
-        print("[+] Event login terkirim.")
+        vlog("[+] Event login terkirim.")
     except Exception as e:
-        print(f"[-] Gagal kirim event login: {e}")
+        vlog(f"[-] Gagal kirim event login: {e}")
         s.close()
         return None
 
@@ -364,7 +374,7 @@ async def like_once(session, bot, target_uuid):
         if fr is None:
             return None
         dec = decode_is_there_result(fr)
-        print(f"    is_there: exists={dec['exists']} "
+        vlog(f"    is_there: exists={dec['exists']} "
               f"liked_user={dec['liked_user']} error={dec['error']!r}")
         return dec
 
@@ -372,7 +382,7 @@ async def like_once(session, bot, target_uuid):
         """Kirim Create SEKALI, jeda 2 dtk, IsThere-sesudah (+1x ulang
         sesudah jeda 3 dtk). Kembalikan (after_dec, terkirim_bool,
         answered_bool)."""
-        print("[*] Kirim Create like (SEKALI) ...")
+        vlog("[*] Kirim Create like (SEKALI) ...")
         try:
             s.sendall(L.build_room_event_varint(
                 "like", build_like_protobuf(0, target_uuid)))
@@ -380,11 +390,11 @@ async def like_once(session, bot, target_uuid):
             return None, False, False
         time.sleep(2)  # beri server waktu mencatat (tanpa menunggu
         # balasan Create yang terbukti tidak pernah tiba di v1)
-        print("[*] Cek IsThere sesudah Create ...")
+        vlog("[*] Cek IsThere sesudah Create ...")
         after = do_is_there()
         answered = after is not None
         if not (after and after["exists"] is True):
-            print("[*] IsThere-sesudah belum True — ulang sekali (3 dtk) ...")
+            vlog("[*] IsThere-sesudah belum True — ulang sekali (3 dtk) ...")
             time.sleep(3)
             after = do_is_there()
             answered = answered or after is not None
@@ -400,6 +410,9 @@ async def like_once(session, bot, target_uuid):
 
 
 async def main():
+    global VERBOSE
+    VERBOSE = True  # probe manual selalu detail
+    L.QUIET = False
     target = (sys.argv[1] if len(sys.argv) > 1 else
               os.getenv("TARGET_UUID", TARGET_DEFAULT))
     print(f"[*] Target like profil: {target}")
