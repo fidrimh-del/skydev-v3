@@ -16,9 +16,9 @@ jawaban server biasanya tiba dalam 1-3 detik):
      (bot_email, target_uuid). Pasangan yang sudah tercatat DILEWATI
      TANPA sesi sama sekali (cek DB ~0,5 detik, bukan sesi ~15 detik).
      Histori HANYA ditulis sesudah IsThere-sesudah = True, jadi
-     histori tidak pernah berbohong. Pasangan tanpa baris histori
-     tetap diverifikasi sekali lewat IsThere-sebelum (pemanasan),
-     lalu dicatat — sesudah itu histori menjadi otoritatif.
+     histori tidak pernah berbohong. (Pemanasan IsThere-sebelum
+     untuk pasangan tanpa histori DIHAPUS 2026-10-29, pola like-post:
+     langsung Create, bukti = IsThere-sesudah — lihat butir 6.)
      Kalau tabel belum ada (404 PostgREST), v2 jalan normal tanpa
      histori (fallback IsThere) + satu baris peringatan jelas.
   4. Tanpa jeda settle 2 detik (FrameReader melewati frame ambient
@@ -30,6 +30,14 @@ jawaban server biasanya tiba dalam 1-3 detik):
      IsThere/Create langsung sesudah login, sesi yang IsThere-nya
      tidak menjawab langsung gagal cepat (pemanggil coba instance
      ke-2). Create kini SEKALI per sesi penuh.
+  6. POLA LIKE-POST (2026-10-29, mengikuti like_cloud.py yang
+     terbukti cepat di skala ratusan ribu akun): IsThere-sebelum
+     DIHAPUS — bot non-histori langsung Create (percaya filter
+     histori Supabase pemanggil). IsThere-sesudah DIPERTAHANKAN
+     sebagai bukti kirim (pengganti HTTP 200; Create TCP tidak
+     pernah dibalas). 'already' via sesi tidak ada lagi; already
+     hanya via histori Supabase. like_once mengembalikan flag
+     "answered" untuk memilah bot no-answer (tidak ikut retry).
 
 YANG TIDAK BERUBAH (aturan keras, jangan dilanggar):
   - Create dikirim SEKALI saja per bot (aksi tulis; 2x berisiko +2).
@@ -288,16 +296,19 @@ def history_put(bot_email, target_uuid):
 
 async def like_once(session, bot, target_uuid):
     """Satu percobaan penuh (tanpa cek histori — pemanggil yang
-    mengecek histori dulu). TANPA JOIN SAMA SEKALI (2026-10-29:
-    bukti produksi run 40814221270 — 30/30 like terkirim tanpa satu
-    pun join berhasil; fallback join 0 kali menyelamatkan dari 63
-    percobaan, jadi dihapus karena hanya membakar ~20 detik per
-    instance + log. Sesi yang IsThere-nya tidak menjawab = sesi mati
-    -> gagal cepat, pemanggil mencoba instance ke-2).
-    Alur: login -> IsThere-sebelum -> Create SEKALI -> jeda 2 dtk ->
-    IsThere-sesudah (+1x ulang kalau belum True).
-    Create kini SEKALI per sesi penuh (aturan keras terpenuhi penuh).
-    Kembalikan dict atau None kalau gagal di tengah jalan."""
+    mengecek histori dulu). TANPA JOIN (2026-10-29) + POLA LIKE-POST
+    (2026-10-29): tanpa IsThere-sebelum — bot non-histori langsung
+    Create (percaya filter histori Supabase pemanggil). IsThere-
+    sesudah DIPERTAHANKAN sebagai bukti kirim (pengganti HTTP 200;
+    Create TCP tidak pernah dibalas, jadi tanpa ini "terkirim" =
+    klaim tanpa bukti).
+    Alur: login -> Create SEKALI -> jeda 2 dtk -> IsThere-sesudah
+    (+1x ulang kalau belum True).
+    Create SEKALI per sesi penuh (aturan keras terpenuhi penuh).
+    Kembalikan dict (dengan flag "answered": True bila ada satu pun
+    jawaban IsThere di sesi ini — pemanggil memakai ini untuk
+    memilah bot no-answer yang tidak ikut ronde retry) atau None
+    kalau gagal di tengah jalan (login/konek/alokasi)."""
     user_jwt, alloc = await L.login_and_allocate(
         bot["email"], bot["password"], bot["device_id"], session)
     if not alloc:
@@ -341,43 +352,33 @@ async def like_once(session, bot, target_uuid):
 
     def do_create_verify():
         """Kirim Create SEKALI, jeda 2 dtk, IsThere-sesudah (+1x ulang
-        sesudah jeda 3 dtk). Kembalikan (after_dec, terkirim_bool)."""
+        sesudah jeda 3 dtk). Kembalikan (after_dec, terkirim_bool,
+        answered_bool)."""
         print("[*] Kirim Create like (SEKALI) ...")
         try:
             s.sendall(L.build_room_event_varint(
                 "like", build_like_protobuf(0, target_uuid)))
         except Exception:
-            return None, False
+            return None, False, False
         time.sleep(2)  # beri server waktu mencatat (tanpa menunggu
         # balasan Create yang terbukti tidak pernah tiba di v1)
         print("[*] Cek IsThere sesudah Create ...")
         after = do_is_there()
+        answered = after is not None
         if not (after and after["exists"] is True):
             print("[*] IsThere-sesudah belum True — ulang sekali (3 dtk) ...")
             time.sleep(3)
             after = do_is_there()
-        return after, True
+            answered = answered or after is not None
+        return after, True, answered
 
-    print("[*] Cek IsThere (sudah pernah like?) ...")
-    before = do_is_there()
-    if before and before["exists"] is True:
-        print("[!] Bot ini SUDAH pernah like target (pemanasan) — catat "
-              "histori & lewati.")
-        history_put(bot["email"], target_uuid)
-        s.close()
-        return {"already": True}
-    if before is None:
-        # Kanal like tidak menjawab tanpa join -> sesi mati. Gagal
-        # cepat (tanpa join fallback); pemanggil coba instance ke-2.
-        print("[!] IsThere tidak menjawab — sesi mati, gagal cepat "
-              "(tanpa join).")
-        s.close()
-        return None
-    after, _ = do_create_verify()
+    # Pola like-post: tanpa IsThere-sebelum — langsung Create.
+    after, _terkirim, answered = do_create_verify()
     s.close()
     if after and after["exists"] is True:
         history_put(bot["email"], target_uuid)
-    return {"already": False, "before": before, "after": after}
+    return {"already": False, "before": None, "after": after,
+            "answered": answered}
 
 
 async def main():
