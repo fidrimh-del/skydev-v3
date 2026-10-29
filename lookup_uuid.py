@@ -1,9 +1,11 @@
 """lookup_uuid.py — Ambil UUID pemain PK XD dari nama (CEPAT).
 
-Jalur yang sudah TERBUKTI (tahap 16): login FSTR -> allocation ->
+Jalur yang sudah TERBUKTI: login FSTR -> allocation ->
 TCP connect -> Event "login" (USER_SESSION JWT + 1.93.3) ->
-auto-join/JoinRoom -> RoomEvent "friends" + protobuf SearchFriend
-(EventId=7) -> search_friend_result -> UUID.
+LANGSUNG RoomEvent "friends" + protobuf SearchFriend (EventId=7)
+-> search_friend_result -> UUID. Join TIDAK diperlukan
+(skip-join test 2026-10-29: search dibalas tanpa room); join hanya
+fallback bila search langsung kosong.
 
 Versi ini DIPANGKAS untuk kecepatan dibanding probe:
   - Tanpa tes friends-kosong di jalur cepat (langsung search;
@@ -13,6 +15,9 @@ Versi ini DIPANGKAS untuk kecepatan dibanding probe:
     SEGERA saat frame target tiba (cap tetap: connect 6, login 5,
     join 3 dtk per room, search 12 dtk); settle 2 dtk DIHAPUS
     (eksperimen skydev-test: 1,4-1,9 dtk vs baseline 27,2 dtk).
+  - Join DIHAPUS dari jalur cepat (2026-10-29, skip-join test):
+    search langsung sesudah login; join (auto/JoinRoom) hanya
+    fallback bila search langsung kosong.
   - Satu varian query saja (server terbukti cocok case-insensitive,
     jadi kapitalisasi input tidak masalah).
   - Log ringkas + blok HASIL + waktu total + satu baris log
@@ -509,33 +514,21 @@ async def lookup_once(session, bot, name):
         print(f"[-] Gagal kirim event login: {e}")
         s.close()
         return None
-    resp, closed, pongs, _ = read_until(
-        s, lambda fr: scan_login_window(fr)[1] is not None, 5)
-    tbugv, room = scan_login_window(resp)
-    print(f"[*] Login: tbugv={'YA' if tbugv else 'tidak'}, "
-          f"auto-join={'room ' + str(room) if room is not None else 'tidak'}")
-    if closed:
-        print("[!] Koneksi ditutup setelah login.")
-        s.close()
-        return None
-    if room is None:
-        room = tcp_join_only(s, gsid)
-    if room is None:
-        print("[!] Join gagal di instance ini.")
-        s.close()
-        return None
-    print(f"[+] Bergabung room {room}.")
-    # Settle 2 dtk DIHAPUS (eksperimen: search langsung sesudah join
-    # tetap berhasil, 0,3 dtk). Variabel `closed` di bawah merujuk
-    # ke hasil jendela login (False bila sampai di sini).
+    # SKIP-JOIN (2026-10-29, terbukti eksperimen skydev-test): search
+    # LANGSUNG sesudah login — server membalas SearchFriendRequest
+    # tanpa keanggotaan room. Join hanya fallback bila search langsung
+    # kosong (pengaman, bukan jalur utama lagi).
 
     def do_search():
+        """Kirim search, tunggu hasil (cap 12 dtk, early-exit).
+        Kembalikan (hit, closed)."""
         frame = build_room_event_varint("friends", build_search_protobuf(name))
         try:
             s.sendall(frame)
             s.sendall(frame)
         except Exception:
-            return None
+            return None, True
+
         def _pred(fr):
             for p in fr:
                 dec = decode_search_result(p)
@@ -550,18 +543,41 @@ async def lookup_once(session, bot, name):
                 print(f"    decode: success={dec['success']} uuid={dec['uuid']} "
                       f"nama={dec['name']!r}")
                 if dec["success"] and dec["uuid"]:
-                    return dec
-        return None
+                    return dec, closed
+        return None, closed
 
     print(f"[*] Cari: {name} ...")
-    hit = do_search()
+    hit, closed = do_search()
     if hit is None and not closed:
-        # Fallback: friends-kosong dulu (ambil daftar), lalu search lagi.
-        print("[*] Search pertama kosong — fallback: friends-kosong lalu search lagi.")
+        # Fallback 1: join dulu lalu search ulang (sesi yang sama).
+        print("[*] Search langsung kosong — fallback: join lalu search lagi.")
+        resp, closed, pongs, _ = read_until(
+            s, lambda fr: scan_login_window(fr)[1] is not None, 5)
+        tbugv, room = scan_login_window(resp)
+        print(f"[*] Login: tbugv={'YA' if tbugv else 'tidak'}, "
+              f"auto-join={'room ' + str(room) if room is not None else 'tidak'}")
+        if not closed:
+            # Hasil search pertama bisa tiba terlambat selama jendela join.
+            for p in resp:
+                dec = decode_search_result(p)
+                if dec is not None and dec["success"] and dec["uuid"]:
+                    hit = dec
+                    break
+            if hit is None:
+                if room is None:
+                    room = tcp_join_only(s, gsid)
+                if room is not None:
+                    print(f"[+] Bergabung room {room}.")
+                    hit, closed = do_search()
+                else:
+                    print("[!] Join gagal di instance ini.")
+    if hit is None and not closed:
+        # Fallback 2: friends-kosong dulu (ambil daftar), lalu search lagi.
+        print("[*] Search masih kosong — fallback: friends-kosong lalu search lagi.")
         try:
             s.sendall(build_room_event_varint("friends", b""))
             read_frames(s, 6)
-            hit = do_search()
+            hit, closed = do_search()
         except Exception:
             pass
     s.close()
