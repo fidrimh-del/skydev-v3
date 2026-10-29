@@ -26,7 +26,7 @@ class PKXDSkydevFollowEngine:
         self.app_key = "57a3d999-654c-4484-a20c-0f4b5512af49"
         self.app_secret = "jWS5aLZacNVFx6PAxpXq2g4o" 
         self.game_protocol = "1.93.0" 
-        self.version = "1.93.3"
+        self.version = "1.93.4"
         self.impersonate_targets = ["chrome110", "chrome116", "safari15_5"]
         
         self.headers_base = {
