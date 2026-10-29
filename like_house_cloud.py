@@ -1,8 +1,11 @@
 """like_house_cloud.py — Kirim like RUMAH PK XD massal via TCP (produksi).
 
-Diadopsi dari like_profile_cloud.py v3.1 (logika paralel,
-replenishment, retry, exit code SAMA PERSIS); yang berubah hanya
-tipe like (0/House) dan tabel histori (house_like_history, bukan
+Diadopsi dari like_profile_cloud.py (pola like-post 2026-10-29: TANPA
+JOIN, tanpa IsThere-sebelum — bot non-histori langsung Create;
+IsThere-sesudah dipertahankan sebagai bukti kirim; fetch agresif;
+retry hanya bot yang sempat menjawab; histori dipaginasi; rotasi
+impersonation per sesi; paralel maks 50); yang berubah hanya tipe
+like (0/House) dan tabel histori (house_like_history, bukan
 profile_like_history — lihat ATURAN KERAS).
 
 Mesin yang dipakai (semuanya sudah TERBUKTI live, bukan tebakan):
@@ -21,7 +24,7 @@ CARA PAKAI:
                 (dicari UUID-nya dulu lewat satu sesi lookup
                 sebelum worker jalan).
     JUMLAH      jumlah like rumah BARU yang diminta.
-    MAX_PARALEL jumlah worker bersamaan, default 20, dijepit 1..20.
+    MAX_PARALEL jumlah worker bersamaan, default 20, dijepit 1..50.
   Di GitHub Actions: pakai like-house.yml (input target/jumlah/
   max_paralel). Di dashboard panel: kartu "Like rumah" (tab
   like-house) memanggil workflow itu lewat executeAndWait yang
@@ -50,13 +53,15 @@ ATURAN KERAS (jangan dilanggar):
     bot yang sama tidak menambah hitungan — jadi pengulangan tugas
     karena gagal tidak akan menggandakan like.
 
-REPLENISHMENT (adopsi v3.1 worker profil): selama terkirim < jumlah
-  dan masih ada bot fresh, fetch ulang dengan limit membesar
-  (deficit + 30, plafon fetch 5000 bot) dan jalankan bot fresh
-  berikutnya (maks 4 ronde fetch); terakhir, bot yang gagal
-  dicoba ulang sekali. Jaminan: MINIMAL jumlah bila stok bot
-  cukup — bukan persis jumlah (overshoot wave paralel tetap
-  berlaku; kelebihan itu bonus, bukan kerugian).
+REPLENISHMENT (pola like-post 2026-10-29): selama terkirim < jumlah
+  dan masih ada bot fresh, fetch ulang — bila ronde sebelumnya 0
+  terkirim, limit melonjak agresif (1000 lalu plafon 5000); bila
+  tidak, membesar sejumlah deficit + cadangan (maks 4 ronde fetch);
+  terakhir, bot yang gagal dicoba ulang sekali HANYA bila sempat
+  menjawab IsThere (bot no-answer tidak diulang — buang waktu).
+  Jaminan: MINIMAL jumlah bila stok bot cukup — bukan persis jumlah
+  (overshoot wave paralel tetap berlaku; kelebihan itu bonus, bukan
+  kerugian).
 
 KELUAR (exit code):
   - 0 = terkirim >= jumlah yang diminta.
@@ -66,9 +71,9 @@ KELUAR (exit code):
     dilewati-sesi / gagal).
 
 CATATAN JUJUR TENTANG WAKTU:
-  - Waktu KERJA script: ~15 detik per like baru (satu worker);
-    dengan 20 worker paralel, 100 like ≈ 100/20 x 15 detik ≈ 75 detik
-    + overhead login (bukan 100 x 15 detik).
+  - Waktu KERJA script: ~15-20 detik per like baru (satu worker);
+    dengan 50 worker paralel, 100 like sehat ≈ 1 menit total
+    (script + overhead runner); pool campuran ≈ 2-3 menit.
   - Counter like RUMAH di game adalah cache per sesi, sama seperti
     counter profil: angka tampil baru diperbarui saat buka ulang
     game atau ganti server (koreksi 2026-10-28: BUKAN delay
@@ -110,7 +115,7 @@ def clamp_paralel(n, default=20):
         v = int(n)
     except (TypeError, ValueError):
         return default
-    return max(1, min(20, v))
+    return max(1, min(50, v))
 
 
 def parse_args(argv):
@@ -148,8 +153,13 @@ def fresh_bots(pool, tried, history):
     return out
 
 
-def next_limit(limit, deficit):
-    """Limit fetch ronde berikutnya: membesar sejumlah deficit + cadangan."""
+def next_limit(limit, deficit, nol=False):
+    """Limit fetch ronde berikutnya. Bila ronde sebelumnya 0 terkirim,
+    melonjak agresif (ke 1000, lalu plafon 5000) supaya job menjangkau
+    stok bot dalam, bukan hanya ratusan bot pertama; bila tidak,
+    membesar pelan sejumlah deficit + cadangan."""
+    if nol:
+        return 5000 if limit >= 1000 else 1000
     return min(limit + deficit + 30, 5000)
 
 
@@ -160,33 +170,42 @@ def _supabase():
 
 
 def history_set_house(target_uuid):
-    """Satu query massal: {email bot yang sudah like RUMAH target}.
-    None = tabel belum ada / error -> fallback IsThere per bot.
-    MEMBACA house_like_history, BUKAN profile_like_history."""
+    """Satu query massal per halaman: {email bot yang sudah like RUMAH
+    target}. Dipaginasi (5000/halaman, maks 200 halaman) supaya target
+    dengan histori >5000 tetap terfilter penuh.
+    MEMBACA house_like_history, BUKAN profile_like_history.
+    None = tabel belum ada / error -> fallback IsThere per bot."""
     url, key = _supabase()
     if not url or not key:
         return None
-    q = ("/rest/v1/house_like_history?select=bot_email"
-         "&target_uuid=eq." + urllib.parse.quote(target_uuid, safe="")
-         + "&limit=5000")
-    req = urllib.request.Request(url + q, headers={
-        "apikey": key, "Authorization": "Bearer " + key}, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            rows = json.loads(r.read().decode("utf-8"))
-        return {row["bot_email"] for row in rows if row.get("bot_email")}
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            print("[!] Tabel house_like_history BELUM ADA -> "
-                  "jalan tanpa histori (fallback IsThere; buat dari "
-                  "house-like-history.sql).")
-        else:
-            print(f"[!] history_set_house HTTP {e.code} -> fallback "
-                  "IsThere.")
-        return None
-    except Exception as e:
-        print(f"[!] history_set_house gagal ({e}) -> fallback IsThere.")
-        return None
+    out = set()
+    offset = 0
+    for _ in range(200):
+        q = ("/rest/v1/house_like_history?select=bot_email"
+             "&target_uuid=eq." + urllib.parse.quote(target_uuid, safe="")
+             + f"&limit=5000&offset={offset}")
+        req = urllib.request.Request(url + q, headers={
+            "apikey": key, "Authorization": "Bearer " + key}, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                rows = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                print("[!] Tabel house_like_history BELUM ADA -> "
+                      "jalan tanpa histori (fallback IsThere; buat dari "
+                      "house-like-history.sql).")
+            else:
+                print(f"[!] history_set_house HTTP {e.code} -> fallback "
+                      "IsThere.")
+            return None
+        except Exception as e:
+            print(f"[!] history_set_house gagal ({e}) -> fallback IsThere.")
+            return None
+        out |= {row["bot_email"] for row in rows if row.get("bot_email")}
+        if len(rows) < 5000:
+            break
+        offset += 5000
+    return out
 
 
 # ---------------------------------------------------------------- resolusi nama
@@ -207,13 +226,22 @@ async def resolve_name(name, bot):
 
 # ---------------------------------------------------------------- worker per bot
 async def bot_coro(bot, target_uuid):
-    """Satu bot: maks 2 instance. Kembalikan 'sent' / 'already' / 'fail'."""
-    async with L.AsyncSession(impersonate="chrome110",
+    """Satu bot: maks 2 instance. Kembalikan 'sent' / 'already' /
+    'fail' / 'fail-noanswer' (tidak satu pun jawaban IsThere di semua
+    instance — bot ini tidak ikut ronde retry: mengulang mereka hanya
+    buang waktu)."""
+    answered_any = False
+    # Rotasi impersonation per sesi ala follow (kurangi throttling
+    # fingerprint)
+    prof = random.choice(("chrome110", "chrome116", "safari15_5"))
+    async with L.AsyncSession(impersonate=prof,
                               verify=False) as session:
         for attempt in range(1, 3):
             res = await H.like_house_once(session, bot, target_uuid)
             if res is None:
                 continue  # instance gagal -> alokasi ulang
+            if res.get("answered"):
+                answered_any = True
             if res.get("already"):
                 return "already"
             after = res.get("after") or {}
@@ -221,7 +249,7 @@ async def bot_coro(bot, target_uuid):
                 return "sent"
             # Create tidak terbukti di instance ini -> coba instance baru
             # (aman: server menduplikasi per pasangan, tidak mengganda).
-    return "fail"
+    return "fail" if answered_any else "fail-noanswer"
 
 
 def run_bot(idx, bot, target_uuid, state):
@@ -248,11 +276,15 @@ def run_bot(idx, bot, target_uuid, state):
         if hasil == "sent":
             state["sent"] += 1
             state["failed_map"].pop(bot["email"], None)
+            state["noanswer"].discard(bot["email"])
         elif hasil == "already":
             state["skipped"] += 1
             state["failed_map"].pop(bot["email"], None)
+            state["noanswer"].discard(bot["email"])
         else:
             state["failed_map"][bot["email"]] = bot
+            if hasil == "fail-noanswer":
+                state["noanswer"].add(bot["email"])
     print(f"[*] Bot {idx}: {hasil} ({dt:.0f} detik) | "
           f"terkirim={state['sent']} dilewati={state['skipped']} "
           f"gagal={len(state['failed_map'])}")
@@ -285,7 +317,7 @@ def main():
         print("Pakai: python like_house_cloud.py <TARGET> <JUMLAH> "
               "[MAX_PARALEL]")
         print("  TARGET = UUID pemilik rumah atau Nama#Kode; "
-              "JUMLAH >= 1; MAX_PARALEL dijepit 1..20 (default 20).")
+              "JUMLAH >= 1; MAX_PARALEL dijepit 1..50 (default 20).")
         return 1
     target_in, jumlah, max_paralel = parsed
     t0 = time.time()
@@ -326,24 +358,33 @@ def main():
         print("[*] Histori rumah tidak dipakai (fallback IsThere "
               "per bot).")
 
-    # 5. Ronde jalan paralel (maks 20). Selama terkirim < jumlah dan
-    #    masih ada bot fresh, ambil lagi (replenishment): limit fetch
-    #    membesar sejumlah deficit + cadangan; bot yang sudah tried
-    #    dan yang ada di histori tidak ditugaskan lagi. Tugas yang
-    #    antre dan mendapati target sudah terpenuhi lewati sendiri
-    #    (murah, tanpa sesi).
+    # 5. Ronde jalan paralel (maks 50). Selama terkirim < jumlah dan
+    #    masih ada bot fresh, ambil lagi (replenishment): bila ronde
+    #    sebelumnya 0 terkirim, fetch AGRESIF (1000 lalu 5000);
+    #    bila tidak, limit membesar sejumlah deficit + cadangan. Bot
+    #    yang sudah tried dan yang ada di histori tidak ditugaskan
+    #    lagi. Tugas yang antre dan mendapati target sudah terpenuhi
+    #    lewati sendiri (murah, tanpa sesi).
     state = {"lock": threading.Lock(), "jumlah": jumlah,
              "sent": 0, "skipped": 0,
-             "tried": set(), "failed_map": {}, "history_seen": set()}
+             "tried": set(), "failed_map": {}, "history_seen": set(),
+             "noanswer": set()}
     nomor = 0
     maks_ronde = 4
+    sebelum = 0  # terkirim sebelum ronde berjalan (untuk deteksi 0 ronde)
     for ronde in range(1, maks_ronde + 1):
         if ronde > 1:
             deficit = jumlah - state["sent"]
-            limit = next_limit(limit, deficit)
+            nol = (state["sent"] == sebelum)
+            limit = next_limit(limit, deficit, nol)
             pool = P.get_bots(target_uuid, limit=limit)
-            print(f"[*] RONDE {ronde}: fetch ulang (limit {limit}) -> "
-                  f"{len(pool)} bot.")
+            if nol:
+                print(f"[*] RONDE {ronde}: fetch AGRESIF (ronde sebelumnya "
+                      f"0 terkirim, limit {limit}) -> {len(pool)} bot.")
+            else:
+                print(f"[*] RONDE {ronde}: fetch ulang (limit {limit}) -> "
+                      f"{len(pool)} bot.")
+        sebelum = state["sent"]
         if sudah is not None:
             baru_histori = {b["email"] for b in pool
                             if b["email"] not in state["tried"]
@@ -363,18 +404,22 @@ def main():
         if state["sent"] >= jumlah:
             break
 
-    # 6. Ronde retry terakhir: bila masih kurang dan ada bot gagal,
-    #    coba ulang sekali (sesi + alokasi fresh). Hanya sekali —
-    #    gagal dua kali berarti instance/bot bermasalah, bukan
-    #    sekadar apes.
+    # 6. Ronde retry terakhir: bila masih kurang, coba ulang sekali
+    #    HANYA bot yang sempat menjawab IsThere (gagal verifikasi /
+    #    transient). Bot no-answer TIDAK diulang (mengulang mereka
+    #    hanya buang waktu) — mereka tetap dihitung Gagal di HASIL,
+    #    hanya tidak dibakar waktu lagi.
     if state["sent"] < jumlah and state["failed_map"]:
-        retry = list(state["failed_map"].values())
+        retry = [b for e, b in state["failed_map"].items()
+                 if e not in state["noanswer"]]
         print(f"[*] RONDE RETRY: {len(retry)} bot gagal dicoba ulang "
-              f"sekali (sesi fresh).")
-        nomor = jalankan_tugas(retry, target_uuid, state, max_paralel,
-                               nomor)
-        print(f"[*] RONDE RETRY selesai: terkirim={state['sent']} "
-              f"gagal={len(state['failed_map'])}")
+              f"sekali (sesi fresh; {len(state['noanswer'])} bot "
+              f"no-answer dilewati).")
+        if retry:
+            nomor = jalankan_tugas(retry, target_uuid, state, max_paralel,
+                                   nomor)
+            print(f"[*] RONDE RETRY selesai: terkirim={state['sent']} "
+                  f"gagal={len(state['failed_map'])}")
 
     dt = time.time() - t0
     sent = state["sent"]
