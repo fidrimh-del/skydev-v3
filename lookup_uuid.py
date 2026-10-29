@@ -8,8 +8,7 @@ LANGSUNG RoomEvent "friends" + protobuf SearchFriend (EventId=7)
 fallback bila search langsung kosong.
 
 Versi ini DIPANGKAS untuk kecepatan dibanding probe:
-  - Tanpa tes friends-kosong di jalur cepat (langsung search;
-    kalau kosong, fallback: friends-kosong dulu lalu search lagi).
+  - Jalur cepat = search langsung sesudah login (tanpa join).
   - Tanpa tes UDP, tanpa Supabase, tanpa dump frame verbose.
   - Jendela early-exit (2026-10-29): connect/login/search berhenti
     SEGERA saat frame target tiba (cap tetap: connect 6, login 5,
@@ -19,8 +18,9 @@ Versi ini DIPANGKAS untuk kecepatan dibanding probe:
     search langsung sesudah login. Urutan fallback (v2):
     tunggu 6 dtk + search ulang -> join + search -> friends-kosong
     + search (join/friends-kosong 0 kasus penyelamatan di v2, hanya
-    jaring pengaman terakhir; server lambat 174.138.71.188 cukup
-    ditunggu).
+    jaring pengaman terakhir; sesi lambat cukup ditunggu —
+    kelambatan bersifat per-sesi, bukan per-server: 174.138.71.188
+    pernah lambat 18-38 dtk dan pernah menjawab <1 dtk).
   - Satu varian query saja (server terbukti cocok case-insensitive,
     jadi kapitalisasi input tidak masalah).
   - Log ringkas + blok HASIL + waktu total + satu baris log
