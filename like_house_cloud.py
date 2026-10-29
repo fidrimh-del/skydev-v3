@@ -267,6 +267,13 @@ def run_bot(idx, bot, target_uuid, state):
             state["sent"] += 1
             state["failed_map"].pop(bot["email"], None)
             state["noanswer"].discard(bot["email"])
+            # Log ringkas: sukses per-bot dibungkam; tampil progres
+            # tiap 50 terkirim (atau saat target tercapai).
+            if state["sent"] % 50 == 0 or state["sent"] >= state["jumlah"]:
+                print(f"[*] Progres like rumah: {state['sent']}/"
+                      f"{state['jumlah']} terkirim | "
+                      f"gagal={len(state['failed_map'])} "
+                      f"dilewati_histori={len(state['history_seen'])}")
         elif hasil == "already":
             state["skipped"] += 1
             state["failed_map"].pop(bot["email"], None)
@@ -275,9 +282,7 @@ def run_bot(idx, bot, target_uuid, state):
             state["failed_map"][bot["email"]] = bot
             if hasil == "fail-noanswer":
                 state["noanswer"].add(bot["email"])
-    print(f"[*] Bot {idx}: {hasil} ({dt:.0f} detik) | "
-          f"terkirim={state['sent']} dilewati={state['skipped']} "
-          f"gagal={len(state['failed_map'])}")
+            print(f"[!] Bot {idx}: {hasil} ({dt:.0f}d)")
     return hasil
 
 
@@ -313,6 +318,9 @@ def main():
     # Versi game/protokol dari panel (tabel app_settings); fallback
     # bawaan bila tak tersedia — job tetap jalan.
     L.apply_panel_versions()
+    # Log ringkas untuk job massal (detail per-bot hanya bila
+    # env LIKE_VERBOSE=1).
+    L.QUIET = True
     t0 = time.time()
     print(f"[*] Like rumah: target={target_in} jumlah={jumlah} "
           f"paralel_maks={max_paralel}")
