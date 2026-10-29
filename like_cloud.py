@@ -1,5 +1,6 @@
 import time
 import urllib3
+import lookup_uuid as L
 import random
 import os
 import sys
@@ -248,6 +249,12 @@ async def main():
 
     mode = sys.argv[1].upper()
     engine = PKXDSkydevLikeEngine()
+
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    L.apply_panel_versions()
+    engine.version = L.VERSION
+    engine.game_protocol = L.GAME_PROTOCOL
     
     # ==========================================
     # MODE GET POSTS (SUPABASE CLOUD)
