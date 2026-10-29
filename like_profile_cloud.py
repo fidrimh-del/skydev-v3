@@ -95,7 +95,7 @@ def clamp_paralel(n, default=20):
         v = int(n)
     except (TypeError, ValueError):
         return default
-    return max(1, min(20, v))
+    return max(1, min(50, v))
 
 
 def parse_args(argv):
@@ -210,7 +210,9 @@ async def bot_coro(bot, target_uuid):
     2/168 retry no-answer lolos, jadi mengulang mereka hanya buang
     waktu)."""
     answered_any = False
-    async with L.AsyncSession(impersonate="chrome110",
+    # Rotasi impersonation per sesi ala follow (kurangi throttling fingerprint)
+    prof = random.choice(("chrome110", "chrome116", "safari15_5"))
+    async with L.AsyncSession(impersonate=prof,
                               verify=False) as session:
         for attempt in range(1, 3):
             res = await P.like_once(session, bot, target_uuid)
