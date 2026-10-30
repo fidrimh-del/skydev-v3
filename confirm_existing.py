@@ -3,6 +3,7 @@
 Menggunakan fungsi dari register_named.py (yang sudah di-fix dengan SET).
 """
 import asyncio, json, os, sys
+from concurrent.futures import ThreadPoolExecutor
 
 # Import dari register_named
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,7 +27,7 @@ def sb_get_bots(limit=0):
         log(f"[!] Gagal ambil bot: {e}")
         return []
 
-async def konfirmasi_satu(bot, sem, idx, total):
+async def konfirmasi_satu(bot, sem, exec_pool, idx, total):
     async with sem:
         email = bot["email"]
         log(f"[{idx}/{total}] {email[:4]}*** ...")
@@ -36,7 +37,7 @@ async def konfirmasi_satu(bot, sem, idx, total):
                 log(f"    -> GAGAL login")
                 return False
             loop = asyncio.get_event_loop()
-            nick = await loop.run_in_executor(None, tcp_get_nickname, user_jwt, alloc, bot["device_id"])
+            nick = await loop.run_in_executor(exec_pool, tcp_get_nickname, user_jwt, alloc, bot["device_id"])
             if nick and "#" in nick:
                 # Update DB dengan PATCH (bukan POST)
                 import urllib.request as urlreq
@@ -73,7 +74,14 @@ async def main():
         print("[!] Semua bot sudah terkonfirmasi."); return
     log(f"[*] KONFIRMASI: {len(bots)} bot, {workers} workers")
     sem = asyncio.Semaphore(workers)
-    hasil = await asyncio.gather(*[konfirmasi_satu(b, sem, i+1, len(bots)) for i, b in enumerate(bots)])
+    # Executor eksplisit: default executor hanya min(32, cpu+4) = 8 thread
+    # di runner 4-CPU, sehingga fase TCP (paling lambat) antri. Samakan
+    # dengan jumlah workers agar paralel benar-benar jalan penuh.
+    exec_pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        hasil = await asyncio.gather(*[konfirmasi_satu(b, sem, exec_pool, i+1, len(bots)) for i, b in enumerate(bots)])
+    finally:
+        exec_pool.shutdown(wait=True)
     ok = sum(1 for x in hasil if x)
     log(f"\n[HASIL] {ok}/{len(bots)} terkonfirmasi")
 
