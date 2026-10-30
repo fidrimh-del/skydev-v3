@@ -416,17 +416,8 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
                         pass
         return None
 
-    # (1) Dengar 10 detik — server mungkin kirim default_nickname_result otomatis
-    # FIX: predicate cari_nickname agar return early (jangan idle 10s, server bisa close)
-    log(f"    [*] Menunggu default_nickname_result otomatis...")
-    resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 10)
-    nama = cari_nickname(resp)
-    if nama:
-        log(f"    [+] Dapat nickname otomatis: {nama}")
-        # KONFIRMASI: kirim SET agar tersimpan di server
-        nama_fix = _kirim_set(s, nama, device_id, cari_nickname)
-        s.close()
-        return nama_fix or nama
+    # (1) Langsung minta via GET (jangan tunggu 10s auto - game <1s)
+    # Skip auto-wait, langsung ke explicit GET
 
     # (2) Minta explicit via GetDefaultNickname (eventId=12)
     req_pb = build_get_default_nickname_protobuf(device_id)
@@ -460,7 +451,7 @@ def _kirim_set(s, nama, device_id, cari_nickname):
         outfit_pb = build_outfit_protobuf()
         s.sendall(build_named_frame(0x08, "outfit", outfit_pb))
         log(f"    [*] Kirim outfit (konfirmasi)...")
-        _t.sleep(2)
+        # TIDAK sleep - langsung lanjut seperti game client (<1s)
     except Exception as e:
         log(f"    [!] Kirim outfit gagal: {e} (lanjut SET)")
     try:
@@ -572,8 +563,8 @@ async def proses_satu_bot(idx, total):
     user_jwt, alloc = jwt_alloc
     log(f"    -> {email[:4]}*** terdaftar, ambil nickname auto-generate...")
 
-    # Jeda 30 detik agar akun fresh siap di server (10s terlalu singkat, banyak gagal SET)
-    await asyncio.sleep(30)
+    # Jeda 15 detik (30s terlalu lama, game <1s; test kecepatan)
+    await asyncio.sleep(15)
 
     # Login ULANG via EMAIL untuk dapat JWT yang valid untuk TCP
     log(f"    -> login ulang via EMAIL...")
