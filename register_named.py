@@ -128,6 +128,19 @@ def build_nickname_protobuf(name, device_id):
     return b"\x08" + varint(0) + pb_string(2, name) + pb_string(3, device_id)
 
 
+def generate_nickname_local():
+    """Generate nickname lokal (Adjective+Animal) seperti pola server.
+    Tidak perlu GET dari server - langsung SET."""
+    import random
+    adjectives = ["Brave", "Swift", "Clever", "Mighty", "Gentle", "Fierce", "Calm", "Wild",
+                  "Happy", "Lucky", "Smart", "Quick", "Bold", "Cool", "Funny", "Kind",
+                  "Proud", "Silly", "Tidy", "Witty", "Zany", "Agile", "Bright", "Daring"]
+    animals = ["Lion", "Tiger", "Bear", "Wolf", "Fox", "Eagle", "Shark", "Dragon",
+               "Phoenix", "Unicorn", "Panda", "Koala", "Otter", "Beaver", "Falcon", "Hawk",
+               "Owl", "Raven", "Cobra", "Python", "Gecko", "Iguana", "Rhino", "Hippo"]
+    return random.choice(adjectives) + random.choice(animals)
+
+
 def build_outfit_protobuf():
     """UpdateOutfitRequest: f1=EventId(1=Update), f2=Outfit{f1=SlotId(0), f3=SkinColor{R=255,G=220,B=180}}.
     Mengsimulasikan konfirmasi outfit (seperti tombol random di game) agar server
