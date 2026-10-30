@@ -7,6 +7,10 @@ on:
         description: 'Total jumlah bot yang dibuat (dibagi ke 20 runner)'
         required: false
         default: '20'
+      workers:
+        description: 'Paralel workers per runner'
+        required: false
+        default: '20'
 
 jobs:
   register:
@@ -40,5 +44,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           JUMLAH: ${{ steps.hitung.outputs.jatah }}
-          WORKERS: '50'
+          WORKERS: ${{ inputs.workers }}
         run: python register_named.py
