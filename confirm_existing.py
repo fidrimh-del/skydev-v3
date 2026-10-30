@@ -8,7 +8,7 @@ import asyncio, json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from register_named import (
     tcp_get_nickname, email_login_jwt, save_bot, log,
-    SUPABASE_URL, SUPABASE_KEY, TABEL, WORKERS
+    SUPABASE_URL, SUPABASE_KEY, TABEL
 )
 from curl_cffi.requests import AsyncSession
 
