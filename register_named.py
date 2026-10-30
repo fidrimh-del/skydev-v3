@@ -429,8 +429,14 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
                         pass
         return None
 
-    # GET dulu untuk inisiasi session (server butuh ini sebelum SET).
-    # Tapi SET pakai nama LOKAL (custom, seperti user ketik manual di game).
+    # OUTFIT DULU (wajib sebelum GET - server tidak kasih saran tanpa outfit)
+    try:
+        outfit_pb = build_outfit_protobuf()
+        s.sendall(build_named_frame(0x08, "outfit", outfit_pb))
+        log(f"    [*] Kirim outfit...")
+    except Exception as e:
+        log(f"    [!] Outfit gagal: {e}")
+    # GET saran dari server
     req_pb = build_get_default_nickname_protobuf(device_id)
     try:
         s.sendall(build_named_frame(0x08, "profile_update", req_pb))
@@ -440,12 +446,14 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
         s.close()
         return None
     resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 8)
-    saran = cari_nickname(resp)
-    log(f"    [*] Saran server: {saran} (diabaikan, pakai custom)")
-    # SET dengan nama custom lokal
-    nama_custom = generate_nickname_local()
-    log(f"    [*] SET nama custom: {nama_custom}")
-    nama_fix = _kirim_set(s, nama_custom, device_id, cari_nickname)
+    nama = cari_nickname(resp)
+    if not nama:
+        log(f"    [-] Server tidak memberi nickname")
+        s.close()
+        return None
+    log(f"    [+] Dapat nickname: {nama}")
+    # SET dengan saran server (custom DITOLAK)
+    nama_fix = _kirim_set(s, nama, device_id, cari_nickname)
     s.close()
     return nama_fix
 
