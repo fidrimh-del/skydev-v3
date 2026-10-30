@@ -42,6 +42,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BOT_TYPE: ${{ github.event.inputs.bot_type }}
         run: python like_cloud.py ${{ github.event.inputs.mode }} "${{ github.event.inputs.target_data }}" ${{ github.event.inputs.jumlah_bot }}
         
       # PERBAIKAN: Langkah "Simpan Hasil Kerja ke GitHub" DIHAPUS TOTAL! 
