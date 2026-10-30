@@ -1,0 +1,48 @@
+name: Register Named Bot (TEST SINGLE)
+
+on:
+  workflow_dispatch:
+    inputs:
+      jumlah:
+        description: 'Total jumlah bot yang dibuat (dibagi ke 20 runner)'
+        required: false
+        default: '20'
+      workers:
+        description: 'Paralel workers per runner'
+        required: false
+        default: '20'
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install curl_cffi
+
+      - name: Hitung jatah per runner
+        id: hitung
+        run: |
+          TOTAL=${{ inputs.jumlah }}
+          PER_RUNNER=$(( (TOTAL + 19) / 20 ))
+          echo "jatah=$PER_RUNNER" >> $GITHUB_OUTPUT
+          echo "Runner ${{ matrix.runner }}: $PER_RUNNER bot dari total $TOTAL"
+
+      - name: Register + Nickname
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          JUMLAH: ${{ steps.hitung.outputs.jatah }}
+          WORKERS: ${{ inputs.workers }}
+        run: python register_named.py
