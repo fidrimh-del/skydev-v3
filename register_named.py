@@ -419,9 +419,9 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
     # (1) Langsung minta via GET (jangan tunggu 10s auto - game <1s)
     # Skip auto-wait, langsung ke explicit GET
 
-    # (2) Minta explicit via GetDefaultNickname (eventId=12)
+    # (2) Minta explicit via GetDefaultNickname (eventId=12) - hanya RoomEvent
     req_pb = build_get_default_nickname_protobuf(device_id)
-    for ftype, fname in [(0x08, "RoomEvent"), (0x05, "Event")]:
+    for ftype, fname in [(0x08, "RoomEvent")]:
         try:
             s.sendall(build_named_frame(ftype, "profile_update", req_pb))
             log(f"    [*] Minta default nickname via {fname}...")
@@ -446,14 +446,7 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
 def _kirim_set(s, nama, device_id, cari_nickname):
     """Kirim SetNicknameRequest dan tunggu konfirmasi. Return nama terkonfirmasi atau None."""
     import time as _t
-    # OUTFIT DULU (sekali saja)
-    try:
-        outfit_pb = build_outfit_protobuf()
-        s.sendall(build_named_frame(0x08, "outfit", outfit_pb))
-        log(f"    [*] Kirim outfit (konfirmasi)...")
-        # TIDAK sleep - langsung lanjut seperti game client (<1s)
-    except Exception as e:
-        log(f"    [!] Kirim outfit gagal: {e} (lanjut SET)")
+    # TANPA outfit (test: apakah server butuh outfit?)
     try:
         set_pb = build_nickname_protobuf(nama, device_id)
         s.sendall(build_named_frame(0x08, "profile_update", set_pb))
@@ -563,16 +556,12 @@ async def proses_satu_bot(idx, total):
     user_jwt, alloc = jwt_alloc
     log(f"    -> {email[:4]}*** terdaftar, ambil nickname auto-generate...")
 
-    # Jeda 15 detik (30s terlalu lama, game <1s; test kecepatan)
-    await asyncio.sleep(15)
+    # Jeda 30 detik untuk init akun di server
+    await asyncio.sleep(30)
 
-    # Login ULANG via EMAIL untuk dapat JWT yang valid untuk TCP
-    log(f"    -> login ulang via EMAIL...")
-    user_jwt2, alloc2 = await email_login_jwt(email, password, device_id)
-    if not user_jwt2:
-        log(f"    [!] login ulang gagal, pakai JWT registrasi")
-    else:
-        user_jwt, alloc = user_jwt2, alloc2
+    # TANPA login ulang - pakai JWT registrasi langsung (seperti game client)
+    # Jika gagal, baru coba login ulang sebagai fallback
+    log(f"    -> pakai JWT registrasi untuk TCP...")
 
     # Ambil nickname dengan RETRY 3x (fresh TCP socket tiap attempt).
     # Alasan: retry dalam _kirim_set pakai socket yang sama (mungkin stale).
