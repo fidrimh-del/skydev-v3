@@ -417,8 +417,9 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
         return None
 
     # (1) Dengar 10 detik — server mungkin kirim default_nickname_result otomatis
+    # FIX: predicate cari_nickname agar return early (jangan idle 10s, server bisa close)
     log(f"    [*] Menunggu default_nickname_result otomatis...")
-    resp = read_until(s, lambda fr: False, 10)
+    resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 10)
     nama = cari_nickname(resp)
     if nama:
         log(f"    [+] Dapat nickname otomatis: {nama}")
@@ -437,7 +438,7 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
             log(f"    [!] Kirim gagal: {e}")
             s.close()
             return None
-        resp = read_until(s, lambda fr: False, 8)
+        resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 8)
         nama = cari_nickname(resp)
         if nama:
             log(f"    [+] Dapat nickname via {fname}: {nama}")
