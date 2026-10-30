@@ -449,10 +449,11 @@ def _kirim_set(s, nama, device_id, cari_nickname):
         return None
     resp = read_until(s, lambda fr: False, 8)
     nama_fix = cari_nickname(resp)
-    if nama_fix:
+    # VALIDASI: hanya terima jika ada #discriminator (bukti server simpan)
+    if nama_fix and "#" in nama_fix:
         log(f"    [+] Nickname TERKONFIRMASI: {nama_fix}")
         return nama_fix
-    log(f"    [!] Tidak ada konfirmasi SET (nama mungkin belum tersimpan)")
+    log(f"    [!] SET gagal/tidak terkonfirmasi (nama: {nama_fix})")
     return None
 
 
