@@ -429,31 +429,14 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
                         pass
         return None
 
-    # (1) Langsung minta via GET (jangan tunggu 10s auto - game <1s)
-    # Skip auto-wait, langsung ke explicit GET
-
-    # (2) Minta explicit via GetDefaultNickname (eventId=12) - hanya RoomEvent
-    req_pb = build_get_default_nickname_protobuf(device_id)
-    for ftype, fname in [(0x08, "RoomEvent")]:
-        try:
-            s.sendall(build_named_frame(ftype, "profile_update", req_pb))
-            log(f"    [*] Minta default nickname via {fname}...")
-        except Exception as e:
-            log(f"    [!] Kirim gagal: {e}")
-            s.close()
-            return None
-        resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 8)
-        nama = cari_nickname(resp)
-        if nama:
-            log(f"    [+] Dapat nickname via {fname}: {nama}")
-            # KONFIRMASI: kirim SET agar tersimpan di server
-            nama_fix = _kirim_set(s, nama, device_id, cari_nickname)
-            s.close()
-            return nama_fix or nama
-
+    # GENERATE LOKAL (ide Bartes): tidak perlu GET dari server.
+    # Server game merespon <1s, tapi GET sering gagal. Generate sendiri lebih cepat.
+    nama = generate_nickname_local()
+    log(f"    [*] Generate nickname lokal: {nama}")
+    # Langsung SET
+    nama_fix = _kirim_set(s, nama, device_id, cari_nickname)
     s.close()
-    log(f"    [-] Server tidak memberi nickname")
-    return None
+    return nama_fix  # None jika gagal, nama# jika sukses
 
 
 def _kirim_set(s, nama, device_id, cari_nickname):
