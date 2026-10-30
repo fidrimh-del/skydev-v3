@@ -556,8 +556,8 @@ async def proses_satu_bot(idx, total):
     user_jwt, alloc = jwt_alloc
     log(f"    -> {email[:4]}*** terdaftar, ambil nickname auto-generate...")
 
-    # Jeda 30 detik untuk init akun di server
-    await asyncio.sleep(30)
+    # Jeda 5 detik (game normal max 5s, 30s tidak berguna)
+    await asyncio.sleep(5)
 
     # TANPA login ulang - pakai JWT registrasi langsung (seperti game client)
     # Jika gagal, baru coba login ulang sebagai fallback
