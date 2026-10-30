@@ -51,7 +51,7 @@ async def konfirmasi_satu(bot, sem, idx, total):
                 except Exception as e:
                     log(f"    -> GAGAL update DB: {e}")
                     return False
-            else:
+            elif nick:
                 log(f"    -> GAGAL (tidak ada #): {nick}")
                 return False
             else:
