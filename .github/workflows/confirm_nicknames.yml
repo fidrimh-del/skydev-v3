@@ -1,0 +1,38 @@
+name: Confirm Nicknames Existing
+
+on:
+  workflow_dispatch:
+    inputs:
+      batas:
+        description: 'Jumlah bot diproses (0 = semua)'
+        required: false
+        default: '0'
+      workers:
+        description: 'Paralel workers per runner'
+        required: false
+        default: '10'
+
+jobs:
+  confirm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install curl_cffi
+      - name: Confirm Nicknames
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BATAS: ${{ inputs.batas }}
+          WORKERS: ${{ inputs.workers }}
+          RUNNER_IDX: ${{ matrix.runner }}
+        run: python confirm_existing.py
