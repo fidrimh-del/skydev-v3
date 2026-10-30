@@ -10,6 +10,10 @@ on:
         description: 'Jumlah Follower'
         required: true
         default: '100'
+      bot_type:
+        description: 'Tipe bot: accounts (tanpa nama) atau named_bots (bernama)'
+        required: false
+        default: 'accounts'
 
 jobs:
   suntik_follow:
