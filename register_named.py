@@ -462,25 +462,20 @@ def _kirim_set(s, nama, device_id, cari_nickname):
         _t.sleep(2)
     except Exception as e:
         log(f"    [!] Kirim outfit gagal: {e} (lanjut SET)")
-    # RETRY SET 3x dengan jeda (akun lambat init butuh waktu)
-    for _attempt in range(3):
-        try:
-            set_pb = build_nickname_protobuf(nama, device_id)
-            s.sendall(build_named_frame(0x08, "profile_update", set_pb))
-            log(f"    [*] Kirim SET nickname: {nama}... (attempt {_attempt+1})")
-        except Exception as e:
-            log(f"    [!] Kirim SET gagal: {e}")
-            return None
-        # Tunggu konfirmasi (20 dtk, early-return jika tiba)
-        resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 20)
-        nama_fix = cari_nickname(resp)
-        if nama_fix and "#" in nama_fix:
-            log(f"    [+] Nickname TERKONFIRMASI: {nama_fix}")
-            return nama_fix
-        log(f"    [!] SET attempt {_attempt+1} gagal (nama: {nama_fix})")
-        if _attempt < 2:
-            log(f"    [*] Tunggu 10s sebelum retry...")
-            _t.sleep(10)
+    try:
+        set_pb = build_nickname_protobuf(nama, device_id)
+        s.sendall(build_named_frame(0x08, "profile_update", set_pb))
+        log(f"    [*] Kirim SET nickname: {nama}...")
+    except Exception as e:
+        log(f"    [!] Kirim SET gagal: {e}")
+        return None
+    # Tunggu konfirmasi (20 dtk, early-return jika tiba)
+    resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 20)
+    nama_fix = cari_nickname(resp)
+    if nama_fix and "#" in nama_fix:
+        log(f"    [+] Nickname TERKONFIRMASI: {nama_fix}")
+        return nama_fix
+    log(f"    [!] SET gagal/tidak terkonfirmasi (nama: {nama_fix})")
     return None
 
 
@@ -587,10 +582,18 @@ async def proses_satu_bot(idx, total):
     else:
         user_jwt, alloc = user_jwt2, alloc2
 
-    # Ambil nickname auto-generate dari server (bukan set manual)
+    # Ambil nickname dengan RETRY 3x (fresh TCP socket tiap attempt).
+    # Alasan: retry dalam _kirim_set pakai socket yang sama (mungkin stale).
     loop = asyncio.get_event_loop()
-    nickname_ok = await loop.run_in_executor(
-        exec_pool, tcp_get_nickname, user_jwt, alloc, device_id)
+    nickname_ok = None
+    for _r in range(3):
+        nickname_ok = await loop.run_in_executor(
+            exec_pool, tcp_get_nickname, user_jwt, alloc, device_id)
+        if nickname_ok and "#" in nickname_ok:
+            break
+        log(f"    -> attempt {_r+1} belum dapat # (dapat: {nickname_ok}), retry...")
+        if _r < 2:
+            await asyncio.sleep(15)
 
     # KETAT: hanya nama dengan # yang berarti server benar-benar simpan
     # (set_name_result). Tanpa # = saran saja, JANGAN dianggap sukses.
