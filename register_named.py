@@ -409,8 +409,10 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
     nama = cari_nickname(resp)
     if nama:
         log(f"    [+] Dapat nickname otomatis: {nama}")
+        # KONFIRMASI: kirim SET agar tersimpan di server
+        nama_fix = _kirim_set(s, nama, device_id, cari_nickname)
         s.close()
-        return nama
+        return nama_fix or nama
 
     # (2) Minta explicit via GetDefaultNickname (eventId=12)
     req_pb = build_get_default_nickname_protobuf(device_id)
@@ -426,11 +428,31 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
         nama = cari_nickname(resp)
         if nama:
             log(f"    [+] Dapat nickname via {fname}: {nama}")
+            # KONFIRMASI: kirim SET agar tersimpan di server
+            nama_fix = _kirim_set(s, nama, device_id, cari_nickname)
             s.close()
-            return nama
+            return nama_fix or nama
 
     s.close()
     log(f"    [-] Server tidak memberi nickname")
+    return None
+
+
+def _kirim_set(s, nama, device_id, cari_nickname):
+    """Kirim SetNicknameRequest dan tunggu konfirmasi. Return nama terkonfirmasi atau None."""
+    try:
+        set_pb = build_nickname_protobuf(nama, device_id)
+        s.sendall(build_named_frame(0x08, "profile_update", set_pb))
+        log(f"    [*] Kirim SET nickname: {nama}...")
+    except Exception as e:
+        log(f"    [!] Kirim SET gagal: {e}")
+        return None
+    resp = read_until(s, lambda fr: False, 8)
+    nama_fix = cari_nickname(resp)
+    if nama_fix:
+        log(f"    [+] Nickname TERKONFIRMASI: {nama_fix}")
+        return nama_fix
+    log(f"    [!] Tidak ada konfirmasi SET (nama mungkin belum tersimpan)")
     return None
 
 
