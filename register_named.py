@@ -370,6 +370,41 @@ def build_get_default_nickname_protobuf(language="EN"):
     return b"\x08" + varint(12) + pb_string(3, language)
 
 
+def tcp_set_dengan_saran(user_jwt, alloc, device_id, saran):
+    """SET nickname dengan saran yang sudah didapat (skip GET).
+    Return nickname jika berhasil, None jika gagal."""
+    host, port = find_host_port(alloc)
+    if not host or not port:
+        return None
+    try:
+        import socket as _sock, struct as _struct
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+        s.settimeout(TIMEOUT_TCP_CONNECT)
+        s.connect((host, port))
+        s.sendall(_struct.pack(">I", 1) + b"\x03")
+    except Exception:
+        return None
+    resp = read_until(s, lambda fr: any(len(p) >= 5 and p[0] == 0x03 for p in fr), 6)
+    if not any(len(p) >= 5 and p[0] == 0x03 for p in resp):
+        s.close()
+        return None
+    try:
+        s.sendall(build_login_frame(user_jwt))
+        # Tunggu sebentar untuk login
+        import time as _time
+        _time.sleep(2)
+        # SET langsung
+        nama_fix = _kirim_set(s, saran, device_id, cari_nickname)
+        s.close()
+        return nama_fix
+    except Exception:
+        pass
+    try:
+        s.close()
+    except:
+        pass
+    return None
+
 def tcp_get_saran_only(user_jwt, alloc, device_id):
     """Hanya GET saran nickname (tanpa SET). Untuk sesi anonymous.
     Return nickname atau None."""
@@ -646,11 +681,22 @@ async def proses_satu_bot(idx, total):
 
     # Ambil nickname dengan RETRY 3x (fresh TCP socket tiap attempt).
     # Alasan: retry dalam _kirim_set pakai socket yang sama (mungkin stale).
+    # FIX: jika saran_anon ada, pakai itu (dari sesi anonymous, sesuai alur game)
     loop = asyncio.get_event_loop()
     nickname_ok = None
-    for _r in range(3):
-        nickname_ok = await loop.run_in_executor(
-            exec_pool, tcp_get_nickname, user_jwt, alloc, device_id)
+    if 'saran_anon' in locals() and saran_anon:
+        log(f"    -> pakai saran dari anonymous: {saran_anon}")
+        # SET langsung dengan saran_anon (skip GET)
+        for _r in range(3):
+            nickname_ok = await loop.run_in_executor(
+                exec_pool, tcp_set_dengan_saran, user_jwt, alloc, device_id, saran_anon)
+            if nickname_ok and "#" in nickname_ok:
+                break
+            await asyncio.sleep(5)
+    else:
+        for _r in range(3):
+            nickname_ok = await loop.run_in_executor(
+                exec_pool, tcp_get_nickname, user_jwt, alloc, device_id)
         if nickname_ok and "#" in nickname_ok:
             break
         log(f"    -> attempt {_r+1} belum dapat # (dapat: {nickname_ok}), retry...")
