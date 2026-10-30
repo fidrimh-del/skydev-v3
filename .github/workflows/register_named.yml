@@ -40,5 +40,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           JUMLAH: ${{ steps.hitung.outputs.jatah }}
-          WORKERS: '10'
+          WORKERS: '50'
         run: python register_named.py
