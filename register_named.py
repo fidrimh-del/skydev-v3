@@ -128,6 +128,18 @@ def build_nickname_protobuf(name, device_id):
     return b"\x08" + varint(0) + pb_string(2, name) + pb_string(3, device_id)
 
 
+def build_outfit_protobuf():
+    """UpdateOutfitRequest: f1=EventId(1=Update), f2=Outfit{f1=SlotId(0), f3=SkinColor{R=255,G=220,B=180}}.
+    Mengsimulasikan konfirmasi outfit (seperti tombol random di game) agar server
+    mengizinkan SetNicknameRequest. Items kosong = server pakai default."""
+    # SkinColor: f1=R, f2=G, f3=B
+    skin = b"\x08" + varint(255) + b"\x10" + varint(220) + b"\x18" + varint(180)
+    # Outfit: f1=SlotId(0), f3=SkinColor
+    outfit = b"\x08" + varint(0) + b"\x1a" + varint(len(skin)) + skin
+    # UpdateOutfitRequest: f1=EventId(1), f2=Outfit
+    return b"\x08" + varint(1) + b"\x12" + varint(len(outfit)) + outfit
+
+
 def parse_protobuf_fields(data):
     fields = []
     i = 0
@@ -441,6 +453,16 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
 
 def _kirim_set(s, nama, device_id, cari_nickname):
     """Kirim SetNicknameRequest dan tunggu konfirmasi. Return nama terkonfirmasi atau None."""
+    # OUTFIT DULU: server PK XD mengharuskan konfirmasi outfit sebelum terima SET nama
+    # (alur game: Register -> Outfit -> Nama). Kirim UpdateOutfitRequest minimal.
+    try:
+        outfit_pb = build_outfit_protobuf()
+        s.sendall(build_named_frame(0x08, "outfit", outfit_pb))
+        log(f"    [*] Kirim outfit (konfirmasi)...")
+        import time as _t
+        _t.sleep(2)  # beri server waktu proses outfit
+    except Exception as e:
+        log(f"    [!] Kirim outfit gagal: {e} (lanjut SET)")
     try:
         set_pb = build_nickname_protobuf(nama, device_id)
         s.sendall(build_named_frame(0x08, "profile_update", set_pb))
