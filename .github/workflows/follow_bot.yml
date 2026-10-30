@@ -38,6 +38,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BOT_TYPE: ${{ github.event.inputs.bot_type }}
         run: python follow_cloud.py ${{ github.event.inputs.target_uuid }} ${{ github.event.inputs.jumlah_order }}
         
       # PERBAIKAN: Tahap "Simpan Data ke GitHub" (git add, git commit, git push) 
