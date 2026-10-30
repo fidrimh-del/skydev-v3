@@ -363,9 +363,11 @@ async def http_register(engine_session):
 
 
 # ============ NICKNAME VIA TCP ============
-def build_get_default_nickname_protobuf(device_id):
-    """Minta nickname auto-generate: ProfileEventId.GetDefaultNickname=12."""
-    return b"\x08" + varint(12) + pb_string(3, device_id)
+def build_get_default_nickname_protobuf(language="EN"):
+    """Minta nickname auto-generate: ProfileEventId.GetDefaultNickname=12.
+    FIX: field3 = language (bukan device_id)! Sesuai dump.cs:
+    SendGetDefaultNicknameRequest(string language, ...)."""
+    return b"\x08" + varint(12) + pb_string(3, language)
 
 
 def tcp_get_nickname(user_jwt, alloc, device_id):
@@ -437,7 +439,7 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
     except Exception as e:
         log(f"    [!] Outfit gagal: {e}")
     # GET saran dari server
-    req_pb = build_get_default_nickname_protobuf(device_id)
+    req_pb = build_get_default_nickname_protobuf("EN")
     try:
         s.sendall(build_named_frame(0x08, "profile_update", req_pb))
         log(f"    [*] Minta nickname via RoomEvent (inisiasi)...")
