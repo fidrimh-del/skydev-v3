@@ -559,9 +559,14 @@ async def proses_satu_bot(idx, total):
     # Jeda 5 detik (game normal max 5s, 30s tidak berguna)
     await asyncio.sleep(5)
 
-    # TANPA login ulang - pakai JWT registrasi langsung (seperti game client)
-    # Jika gagal, baru coba login ulang sebagai fallback
-    log(f"    -> pakai JWT registrasi untuk TCP...")
+    # Login ULANG via EMAIL untuk dapat JWT yang valid untuk TCP
+    # (JWT registrasi TIDAK valid untuk TCP - sudah terbukti 0/8 gagal tanpa ini)
+    log(f"    -> login ulang via EMAIL...")
+    user_jwt2, alloc2 = await email_login_jwt(email, password, device_id)
+    if not user_jwt2:
+        log(f"    [!] login ulang gagal, pakai JWT registrasi")
+    else:
+        user_jwt, alloc = user_jwt2, alloc2
 
     # Ambil nickname dengan RETRY 3x (fresh TCP socket tiap attempt).
     # Alasan: retry dalam _kirim_set pakai socket yang sama (mungkin stale).
