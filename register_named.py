@@ -697,11 +697,11 @@ async def proses_satu_bot(idx, total):
         for _r in range(3):
             nickname_ok = await loop.run_in_executor(
                 exec_pool, tcp_get_nickname, user_jwt, alloc, device_id)
-        if nickname_ok and "#" in nickname_ok:
-            break
-        log(f"    -> attempt {_r+1} belum dapat # (dapat: {nickname_ok}), retry...")
-        if _r < 2:
-            await asyncio.sleep(15)
+            if nickname_ok and "#" in nickname_ok:
+                break
+            log(f"    -> attempt {_r+1} belum dapat # (dapat: {nickname_ok}), retry...")
+            if _r < 2:
+                await asyncio.sleep(15)
 
     # KETAT: hanya nama dengan # yang berarti server benar-benar simpan
     # (set_name_result). Tanpa # = saran saja, JANGAN dianggap sukses.
