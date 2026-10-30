@@ -14,6 +14,10 @@ on:
         description: 'Jumlah Bot (Hanya dipakai untuk mode LIKE)'
         required: false
         default: '50'
+      bot_type:
+        description: 'Tipe bot: accounts atau named_bots'
+        required: false
+        default: 'accounts'
 
 jobs:
   operasi_postingan:
