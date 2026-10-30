@@ -118,7 +118,9 @@ class PKXDSkydevFollowEngine:
 # ==========================================
 async def fetch_available_bots(session_http, target_uuid, limit):
     """Mengambil bot segar dari Supabase melalui fungsi RPC"""
-    endpoint = f"{SUPABASE_URL}/rest/v1/rpc/get_fresh_bots"
+    BOT_TYPE = os.getenv("BOT_TYPE", "accounts")
+    rpc_name = "get_fresh_named_bots" if BOT_TYPE == "named_bots" else "get_fresh_bots"
+    endpoint = f"{SUPABASE_URL}/rest/v1/rpc/{rpc_name}"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
