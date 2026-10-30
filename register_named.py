@@ -453,7 +453,7 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
 def _kirim_set(s, nama, device_id, cari_nickname):
     """Kirim SetNicknameRequest dan tunggu konfirmasi. Return nama terkonfirmasi atau None."""
     import time as _t
-    # TANPA outfit (test: apakah server butuh outfit?)
+    # OUTFIT WAJIB (server tidak kasih saran nama sebelum outfit)
     try:
         set_pb = build_nickname_protobuf(nama, device_id)
         s.sendall(build_named_frame(0x08, "profile_update", set_pb))
