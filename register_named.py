@@ -28,6 +28,7 @@ import struct
 import sys
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 from curl_cffi.requests import AsyncSession
 
@@ -447,7 +448,10 @@ def _kirim_set(s, nama, device_id, cari_nickname):
     except Exception as e:
         log(f"    [!] Kirim SET gagal: {e}")
         return None
-    resp = read_until(s, lambda fr: False, 8)
+    # Server butuh ~8 dtk untuk proses SET; timeout 8 dtk terlalu mepet
+    # (banyak konfirmasi tiba di detik ke-7.5+). Naikkan ke 20 dtk dan
+    # kembali lebih awal begitu hasil nickname tiba.
+    resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 20)
     nama_fix = cari_nickname(resp)
     # VALIDASI: hanya terima jika ada #discriminator (bukti server simpan)
     if nama_fix and "#" in nama_fix:
@@ -535,7 +539,11 @@ async def save_bot(session, email, password, device_id, nickname, status):
 
 
 # ============ MAIN ============
+_exec_pool = None
+
 async def proses_satu_bot(idx, total):
+    global _exec_pool
+    exec_pool = _exec_pool
     log(f"[{idx}/{total}] Registrasi HTTP...")
     email, password, device_id, jwt_alloc = await http_register(None)
     if not email:
@@ -559,14 +567,17 @@ async def proses_satu_bot(idx, total):
     # Ambil nickname auto-generate dari server (bukan set manual)
     loop = asyncio.get_event_loop()
     nickname_ok = await loop.run_in_executor(
-        None, tcp_get_nickname, user_jwt, alloc, device_id)
+        exec_pool, tcp_get_nickname, user_jwt, alloc, device_id)
 
+    # KETAT: hanya nama dengan # yang berarti server benar-benar simpan
+    # (set_name_result). Tanpa # = saran saja, JANGAN dianggap sukses.
     status = "SUCCESS"
-    if nickname_ok:
-        log(f"    -> nickname OK: {nickname_ok}")
+    if nickname_ok and "#" in nickname_ok:
+        log(f"    -> nickname OK (server): {nickname_ok}")
     else:
-        log(f"    -> nickname GAGAL (bot tetap disimpan tanpa nickname)")
+        log(f"    -> nickname GAGAL/tak terkonfirmasi server (dapat: {nickname_ok})")
         nickname_ok = None
+        status = "NICK_FAIL"
 
     async with AsyncSession(impersonate="chrome110",
                             verify=False) as session:
@@ -591,11 +602,17 @@ async def main():
     log(f"[*] REGISTER+NICKNAME: {jumlah} bot -> tabel `{TABEL}` (paralel {workers} workers)")
     t0 = time.time()
 
+    global _exec_pool
     sem = asyncio.Semaphore(workers)
-    async def _run(i):
-        async with sem:
-            return await proses_satu_bot(i, jumlah)
-    hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)])
+    # Executor eksplisit: default cuma 8 thread di runner 4-CPU
+    _exec_pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        async def _run(i):
+            async with sem:
+                return await proses_satu_bot(i, jumlah)
+        hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)])
+    finally:
+        _exec_pool.shutdown(wait=True)
     sukses = sum(1 for x in hasil if x)
 
     dt = time.time() - t0
