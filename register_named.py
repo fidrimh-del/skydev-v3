@@ -610,7 +610,8 @@ async def proses_satu_bot(idx, total):
         ok = await save_bot(session, email, password, device_id,
                             nickname_ok, status)
     log(f"    -> {'tersimpan' if ok else 'GAGAL simpan'} ke DB")
-    return ok
+    # Return nickname (untuk hitung yang ada #)
+    return nickname_ok if (ok and nickname_ok and "#" in nickname_ok) else None
 
 
 async def main():
@@ -639,10 +640,11 @@ async def main():
         hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)])
     finally:
         _exec_pool.shutdown(wait=True)
-    sukses = sum(1 for x in hasil if x)
+    # hasil berisi nickname (str dengan #) atau None
+    dengan_hash = sum(1 for x in hasil if x and "#" in str(x))
 
     dt = time.time() - t0
-    log(f"\n[HASIL] {sukses}/{jumlah} bot sukses "
+    log(f"\n[HASIL] {dengan_hash}/{jumlah} bot dapat nama (#) "
         f"({dt:.1f}s total, {dt/max(jumlah,1):.1f}s/bot)")
 
 
