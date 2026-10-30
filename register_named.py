@@ -522,8 +522,8 @@ async def proses_satu_bot(idx, total):
     user_jwt, alloc = jwt_alloc
     log(f"    -> {email[:4]}*** terdaftar, ambil nickname auto-generate...")
 
-    # Jeda 30 detik agar akun fresh siap di server
-    await asyncio.sleep(30)
+    # Jeda 10 detik agar akun fresh siap di server (dioptimasi dari 30s)
+    await asyncio.sleep(10)
 
     # Login ULANG via EMAIL untuk dapat JWT yang valid untuk TCP
     log(f"    -> login ulang via EMAIL...")
@@ -559,21 +559,21 @@ async def main():
         # JUMLAH dari env workflow
         pass
     jumlah = int(os.getenv("JUMLAH", str(jumlah)))
+    workers = int(os.getenv("WORKERS", "10"))
 
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("[!] SUPABASE_URL / SUPABASE_SERVICE_KEY belum diset.")
         sys.exit(1)
 
-    log(f"[*] REGISTER+NICKNAME: {jumlah} bot -> tabel `{TABEL}`")
-    log(f"[*] Delay antar bot: {DELAY_ANTAR_BOT}s (konsisten)")
+    log(f"[*] REGISTER+NICKNAME: {jumlah} bot -> tabel `{TABEL}` (paralel {workers} workers)")
     t0 = time.time()
 
-    sukses = 0
-    for i in range(1, jumlah + 1):
-        if await proses_satu_bot(i, jumlah):
-            sukses += 1
-        if i < jumlah:
-            await asyncio.sleep(DELAY_ANTAR_BOT)
+    sem = asyncio.Semaphore(workers)
+    async def _run(i):
+        async with sem:
+            return await proses_satu_bot(i, jumlah)
+    hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)])
+    sukses = sum(1 for x in hasil if x)
 
     dt = time.time() - t0
     log(f"\n[HASIL] {sukses}/{jumlah} bot sukses "
