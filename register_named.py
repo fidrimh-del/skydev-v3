@@ -370,6 +370,53 @@ def build_get_default_nickname_protobuf(language="EN"):
     return b"\x08" + varint(12) + pb_string(3, language)
 
 
+def tcp_get_saran_only(user_jwt, alloc, device_id):
+    """Hanya GET saran nickname (tanpa SET). Untuk sesi anonymous.
+    Return nickname atau None."""
+    # Panggil tcp_get_nickname tapi dengan flag hanya-GET
+    # Implementasi: duplikat logika GET dari tcp_get_nickname
+    host, port = find_host_port(alloc)
+    if not host or not port:
+        return None
+    try:
+        import socket as _sock, struct as _struct
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+        s.settimeout(TIMEOUT_TCP_CONNECT)
+        s.connect((host, port))
+        s.sendall(_struct.pack(">I", 1) + b"\x03")
+    except Exception:
+        return None
+    # Tunggu Connected
+    resp = read_until(s, lambda fr: any(len(p) >= 5 and p[0] == 0x03 for p in fr), 6)
+    if not any(len(p) >= 5 and p[0] == 0x03 for p in resp):
+        s.close()
+        return None
+    # Login
+    try:
+        s.sendall(build_login_frame(user_jwt))
+        resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 10)
+        saran = cari_nickname(resp)
+        if saran:
+            s.close()
+            return saran
+    except Exception:
+        pass
+    # Coba request explicit
+    try:
+        req_pb = build_get_default_nickname_protobuf("EN")
+        s.sendall(build_named_frame(0x08, "profile_update", req_pb))
+        resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 8)
+        saran = cari_nickname(resp)
+        s.close()
+        return saran
+    except Exception:
+        pass
+    try:
+        s.close()
+    except:
+        pass
+    return None
+
 def tcp_get_nickname(user_jwt, alloc, device_id):
     """Ambil nickname auto-generate dari server.
     Coba: (1) dengar default_nickname_result otomatis,
@@ -571,10 +618,22 @@ async def proses_satu_bot(idx, total):
         return False
 
     user_jwt, alloc = jwt_alloc
+    user_jwt_anon, alloc_anon = user_jwt, alloc  # SIMPAN anonymous untuk GET
     log(f"    -> {email[:4]}*** terdaftar, ambil nickname auto-generate...")
 
     # Jeda 5 detik (game normal max 5s, 30s tidak berguna)
     await asyncio.sleep(5)
+
+    # FIX 2026-10-30: GET saran dengan JWT ANONYMOUS (sebelum link email)
+    # Sesuai alur game: minta saran SEBELUM login email
+    log(f"    -> GET saran nickname via ANONYMOUS...")
+    loop_anon = asyncio.get_event_loop()
+    saran_anon = await loop_anon.run_in_executor(
+        exec_pool, tcp_get_saran_only, user_jwt_anon, alloc_anon, device_id)
+    if saran_anon:
+        log(f"    [+] Saran dari anonymous: {saran_anon}")
+    else:
+        log(f"    [!] GET anonymous gagal, coba via email...")
 
     # Login ULANG via EMAIL untuk dapat JWT yang valid untuk TCP
     # (JWT registrasi TIDAK valid untuk TCP - sudah terbukti 0/8 gagal tanpa ini)
