@@ -453,33 +453,34 @@ def tcp_get_nickname(user_jwt, alloc, device_id):
 
 def _kirim_set(s, nama, device_id, cari_nickname):
     """Kirim SetNicknameRequest dan tunggu konfirmasi. Return nama terkonfirmasi atau None."""
-    # OUTFIT DULU: server PK XD mengharuskan konfirmasi outfit sebelum terima SET nama
-    # (alur game: Register -> Outfit -> Nama). Kirim UpdateOutfitRequest minimal.
+    import time as _t
+    # OUTFIT DULU (sekali saja)
     try:
         outfit_pb = build_outfit_protobuf()
         s.sendall(build_named_frame(0x08, "outfit", outfit_pb))
         log(f"    [*] Kirim outfit (konfirmasi)...")
-        import time as _t
-        _t.sleep(2)  # beri server waktu proses outfit
+        _t.sleep(2)
     except Exception as e:
         log(f"    [!] Kirim outfit gagal: {e} (lanjut SET)")
-    try:
-        set_pb = build_nickname_protobuf(nama, device_id)
-        s.sendall(build_named_frame(0x08, "profile_update", set_pb))
-        log(f"    [*] Kirim SET nickname: {nama}...")
-    except Exception as e:
-        log(f"    [!] Kirim SET gagal: {e}")
-        return None
-    # Server butuh ~8 dtk untuk proses SET; timeout 8 dtk terlalu mepet
-    # (banyak konfirmasi tiba di detik ke-7.5+). Naikkan ke 20 dtk dan
-    # kembali lebih awal begitu hasil nickname tiba.
-    resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 20)
-    nama_fix = cari_nickname(resp)
-    # VALIDASI: hanya terima jika ada #discriminator (bukti server simpan)
-    if nama_fix and "#" in nama_fix:
-        log(f"    [+] Nickname TERKONFIRMASI: {nama_fix}")
-        return nama_fix
-    log(f"    [!] SET gagal/tidak terkonfirmasi (nama: {nama_fix})")
+    # RETRY SET 3x dengan jeda (akun lambat init butuh waktu)
+    for _attempt in range(3):
+        try:
+            set_pb = build_nickname_protobuf(nama, device_id)
+            s.sendall(build_named_frame(0x08, "profile_update", set_pb))
+            log(f"    [*] Kirim SET nickname: {nama}... (attempt {_attempt+1})")
+        except Exception as e:
+            log(f"    [!] Kirim SET gagal: {e}")
+            return None
+        # Tunggu konfirmasi (20 dtk, early-return jika tiba)
+        resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 20)
+        nama_fix = cari_nickname(resp)
+        if nama_fix and "#" in nama_fix:
+            log(f"    [+] Nickname TERKONFIRMASI: {nama_fix}")
+            return nama_fix
+        log(f"    [!] SET attempt {_attempt+1} gagal (nama: {nama_fix})")
+        if _attempt < 2:
+            log(f"    [*] Tunggu 10s sebelum retry...")
+            _t.sleep(10)
     return None
 
 
@@ -575,8 +576,8 @@ async def proses_satu_bot(idx, total):
     user_jwt, alloc = jwt_alloc
     log(f"    -> {email[:4]}*** terdaftar, ambil nickname auto-generate...")
 
-    # Jeda 10 detik agar akun fresh siap di server (dioptimasi dari 30s)
-    await asyncio.sleep(10)
+    # Jeda 30 detik agar akun fresh siap di server (10s terlalu singkat, banyak gagal SET)
+    await asyncio.sleep(30)
 
     # Login ULANG via EMAIL untuk dapat JWT yang valid untuk TCP
     log(f"    -> login ulang via EMAIL...")
