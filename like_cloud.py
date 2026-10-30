@@ -208,7 +208,8 @@ async def sb_record_like_history(session_http, post_id, success_emails):
 
 async def get_master_bot(session_http):
     """Mengambil 1 bot acak dari Supabase untuk digunakan saat Get Posts (tanpa menghabiskan kuota follow)"""
-    endpoint = f"{SUPABASE_URL}/rest/v1/accounts?select=email,password,device_id&status=eq.SUCCESS&limit=1"
+    _tabel = "named_bots" if os.getenv("BOT_TYPE", "accounts") == "named_bots" else "accounts"
+    endpoint = f"{SUPABASE_URL}/rest/v1/{_tabel}?select=email,password,device_id&status=eq.SUCCESS&limit=1"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
