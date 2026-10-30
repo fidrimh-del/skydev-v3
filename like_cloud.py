@@ -177,7 +177,8 @@ async def sb_upsert_youni_posts(session_http, target_uid, posts_data):
         print(f"[-] Gagal push Youni Posts ke Supabase: {e}")
 
 async def sb_get_fresh_like_bots(session_http, post_id, limit):
-    endpoint = f"{SUPABASE_URL}/rest/v1/rpc/get_fresh_like_bots"
+    _rpc = "get_fresh_named_like_bots" if os.getenv("BOT_TYPE", "accounts") == "named_bots" else "get_fresh_like_bots"
+    endpoint = f"{SUPABASE_URL}/rest/v1/rpc/{_rpc}"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
