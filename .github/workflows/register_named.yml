@@ -1,0 +1,31 @@
+name: Register Named Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      jumlah:
+        description: 'Jumlah bot yang dibuat'
+        required: false
+        default: '3'
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install curl_cffi
+
+      - name: Register + Nickname
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          JUMLAH: ${{ inputs.jumlah }}
+        run: python register_named.py
