@@ -56,8 +56,10 @@ async def main():
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("[!] SUPABASE_URL / SUPABASE_SERVICE_KEY belum diset."); sys.exit(1)
     bots = sb_get_bots(batas)
+    # Filter: hanya yang nickname-nya tidak ada # (belum terkonfirmasi)
+    bots = [b for b in bots if not (b.get("nickname") and "#" in b["nickname"])]
     if not bots:
-        print("[!] Tidak ada bot."); return
+        print("[!] Semua bot sudah terkonfirmasi."); return
     log(f"[*] KONFIRMASI: {len(bots)} bot, {workers} workers")
     sem = asyncio.Semaphore(workers)
     hasil = await asyncio.gather(*[konfirmasi_satu(b, sem, i+1, len(bots)) for i, b in enumerate(bots)])
