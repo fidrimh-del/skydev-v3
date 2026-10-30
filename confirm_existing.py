@@ -7,7 +7,7 @@ import asyncio, json, os, sys
 # Import dari register_named
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from register_named import (
-    tcp_get_nickname, email_login_jwt, save_bot, log,
+    tcp_get_nickname, email_login_jwt, log,
     SUPABASE_URL, SUPABASE_KEY, TABEL
 )
 from curl_cffi.requests import AsyncSession
@@ -37,12 +37,23 @@ async def konfirmasi_satu(bot, sem, idx, total):
                 return False
             loop = asyncio.get_event_loop()
             nick = await loop.run_in_executor(None, tcp_get_nickname, user_jwt, alloc, bot["device_id"])
-            if nick:
-                # Update DB dengan nickname terkonfirmasi
-                async with AsyncSession(impersonate="chrome110", verify=False) as sess:
-                    await save_bot(sess, email, bot["password"], bot["device_id"], nick, "SUCCESS")
-                log(f"    -> TERKONFIRMASI: {nick}")
-                return True
+            if nick and "#" in nick:
+                # Update DB dengan PATCH (bukan POST)
+                import urllib.request as urlreq
+                url = f"{SUPABASE_URL}/rest/v1/{TABEL}?email=eq.{email}"
+                h = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+                     "Content-Type": "application/json", "Prefer": "return=minimal"}
+                req = urlreq.Request(url, data=json.dumps({"nickname": nick}).encode(), headers=h, method="PATCH")
+                try:
+                    urlreq.urlopen(req, timeout=15)
+                    log(f"    -> TERKONFIRMASI: {nick}")
+                    return True
+                except Exception as e:
+                    log(f"    -> GAGAL update DB: {e}")
+                    return False
+            else:
+                log(f"    -> GAGAL (tidak ada #): {nick}")
+                return False
             else:
                 log(f"    -> GAGAL dapat nickname")
                 return False
