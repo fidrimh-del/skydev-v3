@@ -948,6 +948,29 @@ _exec_pool = None
 async def proses_satu_bot(idx, total, wanted_name):
     global _exec_pool
     exec_pool = _exec_pool
+    loop = asyncio.get_event_loop()
+
+    async def try_nickname(user_jwt_, alloc_, device_id_, wanted_, break_on_error):
+        # 4 sesi TCP, varian SET v6a-v6e di dalam tiap sesi.
+        # break_on_error=True untuk nama list: penolakan eksplisit
+        # (mis. profanity) itu permanen untuk nama itu, jangan buang
+        # 3 sesi lagi. break_on_error=False untuk saran server:
+        # tiap sesi bisa memberi saran baru, jadi saran yang ditolak
+        # satu sesi tidak berarti saran berikutnya juga ditolak.
+        n_out, e_out = None, None
+        for _attempt in range(4):
+            n_out, e_out = await loop.run_in_executor(
+                exec_pool, tcp_nickname, user_jwt_, alloc_, device_id_, wanted_)
+            if n_out and not e_out and "#" in n_out:
+                return n_out, n_out, e_out
+            if e_out and break_on_error:
+                log(f"    -> Server menolak nama ini secara eksplisit: {e_out!r}, tidak di-retry")
+                break
+            if _attempt < 3:
+                log(f"    -> TCP sesi {_attempt+1} gagal (name={n_out!r} error={e_out!r}), retry sesi {_attempt+2}...")
+                await asyncio.sleep(2 + random.random() * 2)
+        return None, n_out, e_out
+
     log(f"[{idx}/{total}] Registrasi HTTP...")
     reg = await http_register()
     if not reg:
@@ -955,62 +978,55 @@ async def proses_satu_bot(idx, total, wanted_name):
         return None
     email, password, device_id, user_jwt, alloc = reg
     log(f"    -> {email[:4]}*** terdaftar, TCP nickname+outfit...")
-    loop = asyncio.get_event_loop()
-    # Retry TCP sampai 4 sesi: kegagalan SET itu flaky (semua varian diam,
-    # ErrorMessage=None), bukan penolakan nama. Tes 5 bot 2026-10-31:
-    # 3 gagal di batch pertama, semua sukses di retry. Jadi jangan
-    # langsung NICK_FAIL setelah 1 sesi. Stagger 0-1 detik juga
-    # mengurangi 100 handshake bersamaan yang bisa membuat server diam.
     await asyncio.sleep(random.random() * 2)
-    name_out, error_out = None, None
-    for _attempt in range(4):
-        name_out, error_out = await loop.run_in_executor(
-            exec_pool, tcp_nickname, user_jwt, alloc, device_id, wanted_name)
-        if name_out and not error_out and "#" in name_out:
-            break
-        if error_out:
-            # Server SUDAH menjawab dengan pesan error eksplisit
-            # (mis. 'Nickname failed profanity check'). Ini penolakan
-            # permanen untuk nama itu, bukan flaky diam. Retry dengan
-            # nama yang sama tidak akan pernah sukses, jadi berhenti
-            # di sesi ini, jangan buang 3 sesi lagi.
-            log(f"    -> Server menolak nama ini secara eksplisit: {error_out!r}, tidak di-retry")
-            break
-        if _attempt < 3:
-            log(f"    -> TCP sesi {_attempt+1} gagal (name={name_out!r} error={error_out!r}), retry sesi {_attempt+2}...")
-            await asyncio.sleep(2 + random.random() * 2)
-    nickname_ok = name_out if (name_out and not error_out and "#" in name_out) else None
-    # FALLBACK SARAN SERVER 2026-10-31 per Bartes: kalau nama dari list
-    # gagal (respon server kosong/diam setelah 4 sesi, ATAU ditolak
-    # eksplisit seperti profanity), JANGAN langsung buang bot ini.
-    # Coba lagi dengan nama saran dari server (wanted_name=None ->
-    # tcp_nickname akan dengar saran otomatis / GET eksplisit, lalu
-    # SET saran itu). Bot yang sukses via list tetap pakai nama list;
-    # bot yang gagal list akan tersimpan dengan nama saran server,
-    # jadi total sukses run 100 naik, bukan 66/100 lalu 34 bot hilang.
-    # Fallback ini pakai akun yang SAMA (email/device_id/jwt/alloc
-    # yang sama), jadi tidak perlu registrasi HTTP baru, dan saran
-    # tiap sesi bisa berbeda (server memberi saran baru tiap sesi),
-    # jadi untuk fallback JANGAN berhenti di error eksplisit satu
-    # sesi -- saran berikutnya bisa bersih. Maksimal 4 sesi fallback,
-    # sama seperti loop list, supaya waktu total per bot gagal
-    # maksimal ~2x loop list, dan hanya bot gagal yang membayar
-    # biaya ini (bot sukses list tidak kena fallback sama sekali).
+    nickname_ok, name_out, error_out = await try_nickname(
+        user_jwt, alloc, device_id, wanted_name, break_on_error=True)
+
+    # FALLBACK AKUN BARU 2026-10-31 per Bartes (menggantikan fallback
+    # saran akun-sama): fallback saran akun-sama TERBUKTI tidak
+    # menyelamatkan akun diam — run 41187626464: 8 sesi fallback,
+    # saran server None 8/8, set_name_result 0/16, karena untuk akun
+    # yang diam, seluruh profile mechanic diam, bukan hanya SET.
+    # Yang TERBUKTI menyelamatkan nama gagal di tes diagnostik
+    # adalah AKUN BARU + nama yang sama (3/3 nama gagal run #12
+    # sukses lagi dengan akun baru). Jadi kalau nama list gagal di
+    # akun pertama, akun pertama itu DIBUANG (tidak disimpan, sesuai
+    # aturan hanya SUCCESS yang masuk DB), registrasi HTTP baru,
+    # lalu coba NAMA LIST YANG SAMA lagi di akun baru. Kalau itu
+    # juga gagal, barulah coba SARAN SERVER di akun baru itu
+    # (profile mechanic akun baru kemungkinan masih hidup, jadi
+    # saran di sini bisa diberikan, tidak seperti di akun lama yang
+    # diam). Bot sukses list tetap pakai nama list; bot sukses
+    # fallback tetap tersimpan, dengan kredensial akun yang sukses
+    # itu (bukan akun lama yang gagal). Hanya bot gagal yang
+    # membayar biaya waktu fallback; bot sukses list tidak kena
+    # fallback sama sekali.
     if not nickname_ok and wanted_name is not None:
-        log(f"    -> FALLBACK: nama list {wanted_name!r} gagal "
-            f"(dapat: {name_out!r} error: {error_out!r}), "
-            f"coba minta nama dari server...")
-        for _fb in range(4):
-            fb_out, fb_err = await loop.run_in_executor(
-                exec_pool, tcp_nickname, user_jwt, alloc, device_id, None)
-            if fb_out and not fb_err and "#" in fb_out:
-                nickname_ok = fb_out
-                log(f"    -> nickname OK via FALLBACK saran server: {nickname_ok}")
-                break
-            log(f"    -> FALLBACK sesi {_fb+1} gagal "
-                f"(dapat: {fb_out!r} error: {fb_err!r})")
-            if _fb < 3:
-                await asyncio.sleep(2 + random.random() * 2)
+        log(f"    -> FALLBACK AKUN BARU: nama list {wanted_name!r} gagal "
+            f"di akun pertama (dapat: {name_out!r} error: {error_out!r}), "
+            f"akun pertama dibuang, registrasi akun baru...")
+        reg2 = await http_register()
+        if not reg2:
+            log("    -> FALLBACK AKUN BARU: GAGAL registrasi akun baru")
+        else:
+            email2, password2, device_id2, user_jwt2, alloc2 = reg2
+            log(f"    -> FALLBACK AKUN BARU: {email2[:4]}*** terdaftar, "
+                f"coba nama list yang sama lagi...")
+            await asyncio.sleep(random.random() * 2)
+            nickname_ok, name_out, error_out = await try_nickname(
+                user_jwt2, alloc2, device_id2, wanted_name, break_on_error=True)
+            if nickname_ok:
+                email, password, device_id, user_jwt = email2, password2, device_id2, user_jwt2
+                log(f"    -> nickname OK via FALLBACK AKUN BARU list: {nickname_ok}")
+            else:
+                log(f"    -> FALLBACK SARAN AKUN BARU: nama list gagal juga "
+                    f"di akun baru (dapat: {name_out!r} error: {error_out!r}), "
+                    f"coba minta nama dari server di akun baru...")
+                nickname_ok, name_out, error_out = await try_nickname(
+                    user_jwt2, alloc2, device_id2, None, break_on_error=False)
+                if nickname_ok:
+                    email, password, device_id, user_jwt = email2, password2, device_id2, user_jwt2
+                    log(f"    -> nickname OK via FALLBACK AKUN BARU saran: {nickname_ok}")
     status = "NICK_FAIL"
     linked = False
     if nickname_ok:
@@ -1029,8 +1045,6 @@ async def proses_satu_bot(idx, total, wanted_name):
         # 2026-10-31 per Bartes: HANYA SUCCESS yang masuk Supabase.
         # Gagal tidak disimpan sama sekali, supaya stok di DB = stok
         # yang benar-benar bisa dipakai follow, tidak manipulatif.
-        # Nama yang gagal tetap bisa dicoba lagi di run berikutnya,
-        # karena filter nama terpakai hanya membuang base SUCCESS.
         log(f"    -> TIDAK disimpan ke {TABEL} (status={status}, hanya SUCCESS yang masuk DB)")
         return None
 
