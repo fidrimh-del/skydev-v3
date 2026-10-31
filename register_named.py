@@ -945,7 +945,7 @@ async def load_used_bases():
 
 _exec_pool = None
 
-async def proses_satu_bot(idx, total, wanted_name):
+async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
     global _exec_pool
     exec_pool = _exec_pool
     loop = asyncio.get_event_loop()
@@ -1027,6 +1027,53 @@ async def proses_satu_bot(idx, total, wanted_name):
                 if nickname_ok:
                     email, password, device_id, user_jwt = email2, password2, device_id2, user_jwt2
                     log(f"    -> nickname OK via FALLBACK AKUN BARU saran: {nickname_ok}")
+    # PENGAMAN NAMA BERBEDA 2026-10-31 per Bartes: kalau SET ditolak
+    # server / diam saja, retri lagi dengan nama LAIN sampai sukses.
+    # Urutan sebelumnya sudah mencoba: akun pertama + nama asli,
+    # akun baru + nama asli, akun baru + saran server. Kalau semua
+    # itu gagal, jangan langsung buang bot ini — coba nama list
+    # BERBEDA, masing-masing dengan AKUN BARU, sampai ada yang
+    # sukses. Nama berbeda diambil dari list partisi runner ini
+    # setelah blok nama asli run ini, jadi tidak memakai nama asli
+    # bot lain di run yang sama (duplikat antar bot tetap diizinkan
+    # server, tapi dihindari di sini supaya stok nama tetap beragam).
+    # BATAS PENGAMAN: maks 5 nama berbeda per bot (total percobaan
+    # per bot: asli akun1 + asli akun2 + saran akun2 + 5 nama berbeda
+    # akun baru = 7 akun, 28 sesi TCP maks). Batas ini bukan untuk
+    # membatasi "sampai sukses" secara prinsip, tapi untuk mencegah
+    # loop tak berhingga yang bisa timeout workflow 120 menit dan
+    # menggagalkan semua bot di runner itu. Secara probabilitas,
+    # kalau tiap percobaan sukses ~60% dan independen, peluang gagal
+    # 7x berturut-turut = 0,4^7 ≈ 0,16%, jadi batas 7 percobaan ini
+    # praktis sudah "sampai sukses" untuk hampir semua bot, dengan
+    # waktu worst-case per bot ~7 menit (7 akun x 4 sesi x ~15 detik),
+    # masih jauh di bawah timeout 120 menit karena bot jalan paralel
+    # per runner dan wall time runner = bot terlambat, bukan jumlah
+    # bot. Bot sukses di jalur sebelumnya TIDAK kena pengaman ini
+    # sama sekali, hanya bot gagal yang membayar biaya waktunya.
+    # UpdateNickname TIDAK dipakai di pengaman ini, karena tes
+    # email-dulu membuktikan UpdateNickname juga diam untuk bot
+    # yang SET-nya diam (0/2), jadi yang dicoba di sini hanya SET
+    # dengan nama list berbeda, bukan UpdateNickname.
+    if not nickname_ok and wanted_name is not None and candidate_names:
+        for _cand in candidate_names:
+            if _cand == wanted_name:
+                continue
+            log(f"    -> PENGAMAN NAMA BERBEDA: nama asli {wanted_name!r} gagal di semua jalur sebelumnya, coba nama berbeda {_cand!r} dengan akun baru...")
+            reg_c = await http_register()
+            if not reg_c:
+                log("    -> PENGAMAN NAMA BERBEDA: GAGAL registrasi akun baru, coba nama berikutnya...")
+                continue
+            email_c, password_c, device_id_c, user_jwt_c, alloc_c = reg_c
+            log(f"    -> PENGAMAN NAMA BERBEDA: {email_c[:4]}*** terdaftar, coba SET {_cand!r}...")
+            await asyncio.sleep(random.random() * 2)
+            nickname_ok, name_out, error_out = await try_nickname(
+                user_jwt_c, alloc_c, device_id_c, _cand, break_on_error=True)
+            if nickname_ok:
+                email, password, device_id, user_jwt = email_c, password_c, device_id_c, user_jwt_c
+                log(f"    -> nickname OK via PENGAMAN NAMA BERBEDA: {nickname_ok} (asli {wanted_name!r}, berbeda {_cand!r})")
+                break
+            log(f"    -> PENGAMAN NAMA BERBEDA: nama {_cand!r} juga gagal (dapat: {name_out!r} error: {error_out!r}), coba nama berikutnya...")
     status = "NICK_FAIL"
     linked = False
     if nickname_ok:
@@ -1102,11 +1149,22 @@ async def main():
         async def _run(i):
             async with sem:
                 wanted = None
+                candidate_names = []
                 if name_mode == "list" and all_names:
                     # Siklis: kalau percobaan melebihi panjang list/partisi,
                     # ulang dari awal partisi, bukan jatuh ke saran server.
                     wanted = all_names[(i - 1 + name_offset) % len(all_names)]
-                return await proses_satu_bot(i, jumlah, wanted)
+                    # Pengaman nama berbeda: 5 nama setelah blok nama
+                    # asli run ini (name_offset .. name_offset+jumlah-1),
+                    # jadi tidak memakai nama asli bot lain di run yang
+                    # sama di runner ini. Kalau list partisi kecil,
+                    # modulo tetap jalan dan duplikat dihindari sebisa
+                    # mungkin dengan cek != wanted dan belum dipakai.
+                    for _k in range(5):
+                        _cand = all_names[(name_offset + jumlah + _k) % len(all_names)]
+                        if _cand != wanted and _cand not in candidate_names:
+                            candidate_names.append(_cand)
+                return await proses_satu_bot(i, jumlah, wanted, candidate_names)
         hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)])
     finally:
         _exec_pool.shutdown(wait=True)
