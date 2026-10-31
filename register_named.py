@@ -968,6 +968,14 @@ async def proses_satu_bot(idx, total, wanted_name):
             exec_pool, tcp_nickname, user_jwt, alloc, device_id, wanted_name)
         if name_out and not error_out and "#" in name_out:
             break
+        if error_out:
+            # Server SUDAH menjawab dengan pesan error eksplisit
+            # (mis. 'Nickname failed profanity check'). Ini penolakan
+            # permanen untuk nama itu, bukan flaky diam. Retry dengan
+            # nama yang sama tidak akan pernah sukses, jadi berhenti
+            # di sesi ini, jangan buang 3 sesi lagi.
+            log(f"    -> Server menolak nama ini secara eksplisit: {error_out!r}, tidak di-retry")
+            break
         if _attempt < 3:
             log(f"    -> TCP sesi {_attempt+1} gagal (name={name_out!r} error={error_out!r}), retry sesi {_attempt+2}...")
             await asyncio.sleep(2 + random.random() * 2)
