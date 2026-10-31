@@ -749,7 +749,8 @@ def tcp_nickname(user_jwt, alloc, device_id, wanted_name=None):
     # berbayar (Hat, Ear, Back, Companion) = 0, tangan 17,17,
     # sepatu 59,59, kacamata 0. Seed dicetak supaya pilihan
     # ini bisa direproduksi dan dicek satu per satu oleh Bartes.
-    skin_pool = [(255,208,176),(255,182,133),(255,168,109),(255,146,72),(217,123,59),(185,98,40),(147,80,47),(110,51,37),(95,41,3),(60,26,2),(0,130,234),(135,220,236),(174,142,237),(137,62,218),(203,64,227),(238,65,153),(252,59,76),(255,143,151),(255,194,211),(255,109,29),(255,204,0),(255,215,122),(98,227,162),(151,203,99),(6,194,0),(239,239,239),(173,173,173)]
+    skin_pool = [(255,208,176),(239,239,239)]  # 2026-10-31 per Bartes: hanya slot 0 kuning sawo dan slot 25 putih, tidak random 27 warna lagi
+    skin_slots = [0, 25]
     face_pool = [354,353,352,351,350,349,348,347,346,345,118,117,116,115,114,113,112,43,42,41,40,39,38,37,36,35,34,6,5]
     hair_pool = [7396,5210,617,611,162,83,81,79,62]
     shirt_pairs = [(6179,6178),(13,5697),(13,1397),(13,33),(13,28),(13,19)]
@@ -763,7 +764,7 @@ def tcp_nickname(user_jwt, alloc, device_id, wanted_name=None):
     rand_shirt = rng.choice(shirt_pairs)
     rand_pants = rng.choice(pants_pairs)
     pre_items = [0, 0, 0, rand_hair, 4636, 16, rand_face, rand_shirt[0], rand_shirt[1], rand_pants[0], rand_pants[1], 17, 17, 59, 59, 0, 0, 0, 0]
-    log(f"[*] RANDOM SEED={rand_seed} skin_slot={rand_skin_idx} skin_rgb={rand_skin} face={rand_face} hair={rand_hair} shirt={rand_shirt} pants={rand_pants} items={pre_items}")
+    log(f"[*] RANDOM SEED={rand_seed} skin_slot={skin_slots[rand_skin_idx]} skin_rgb={rand_skin} face={rand_face} hair={rand_hair} shirt={rand_shirt} pants={rand_pants} items={pre_items}")
     try:
         s.sendall(build_named_frame(
             0x08, "equip",
@@ -955,8 +956,21 @@ async def proses_satu_bot(idx, total, wanted_name):
     email, password, device_id, user_jwt, alloc = reg
     log(f"    -> {email[:4]}*** terdaftar, TCP nickname+outfit...")
     loop = asyncio.get_event_loop()
-    name_out, error_out = await loop.run_in_executor(
-        exec_pool, tcp_nickname, user_jwt, alloc, device_id, wanted_name)
+    # Retry TCP sampai 3 sesi: kegagalan SET itu flaky (semua varian diam,
+    # ErrorMessage=None), bukan penolakan nama. Tes 5 bot 2026-10-31:
+    # 3 gagal di batch pertama, semua sukses di retry. Jadi jangan
+    # langsung NICK_FAIL setelah 1 sesi. Stagger 0-1 detik juga
+    # mengurangi 100 handshake bersamaan yang bisa membuat server diam.
+    await asyncio.sleep(random.random())
+    name_out, error_out = None, None
+    for _attempt in range(3):
+        name_out, error_out = await loop.run_in_executor(
+            exec_pool, tcp_nickname, user_jwt, alloc, device_id, wanted_name)
+        if name_out and not error_out and "#" in name_out:
+            break
+        if _attempt < 2:
+            log(f"    -> TCP sesi {_attempt+1} gagal (name={name_out!r} error={error_out!r}), retry sesi {_attempt+2}...")
+            await asyncio.sleep(2 + random.random())
     nickname_ok = name_out if (name_out and not error_out and "#" in name_out) else None
     status = "NICK_FAIL"
     linked = False
