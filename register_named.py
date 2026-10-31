@@ -956,21 +956,21 @@ async def proses_satu_bot(idx, total, wanted_name):
     email, password, device_id, user_jwt, alloc = reg
     log(f"    -> {email[:4]}*** terdaftar, TCP nickname+outfit...")
     loop = asyncio.get_event_loop()
-    # Retry TCP sampai 3 sesi: kegagalan SET itu flaky (semua varian diam,
+    # Retry TCP sampai 4 sesi: kegagalan SET itu flaky (semua varian diam,
     # ErrorMessage=None), bukan penolakan nama. Tes 5 bot 2026-10-31:
     # 3 gagal di batch pertama, semua sukses di retry. Jadi jangan
     # langsung NICK_FAIL setelah 1 sesi. Stagger 0-1 detik juga
     # mengurangi 100 handshake bersamaan yang bisa membuat server diam.
-    await asyncio.sleep(random.random())
+    await asyncio.sleep(random.random() * 2)
     name_out, error_out = None, None
-    for _attempt in range(3):
+    for _attempt in range(4):
         name_out, error_out = await loop.run_in_executor(
             exec_pool, tcp_nickname, user_jwt, alloc, device_id, wanted_name)
         if name_out and not error_out and "#" in name_out:
             break
-        if _attempt < 2:
+        if _attempt < 3:
             log(f"    -> TCP sesi {_attempt+1} gagal (name={name_out!r} error={error_out!r}), retry sesi {_attempt+2}...")
-            await asyncio.sleep(2 + random.random())
+            await asyncio.sleep(2 + random.random() * 2)
     nickname_ok = name_out if (name_out and not error_out and "#" in name_out) else None
     status = "NICK_FAIL"
     linked = False
@@ -981,10 +981,19 @@ async def proses_satu_bot(idx, total, wanted_name):
         status = "SUCCESS" if linked else "EMAIL_FAIL"
     else:
         log(f"    -> nickname GAGAL (dapat: {name_out!r} error: {error_out!r})")
-    async with AsyncSession(impersonate="chrome110", verify=False) as session:
-        ok = await save_bot(session, email, password, device_id, nickname_ok, status)
-    log(f"    -> {'tersimpan' if ok else 'GAGAL simpan'} ke {TABEL} status={status}")
-    return nickname_ok if (ok and status == "SUCCESS") else None
+    if status == "SUCCESS":
+        async with AsyncSession(impersonate="chrome110", verify=False) as session:
+            ok = await save_bot(session, email, password, device_id, nickname_ok, status)
+        log(f"    -> {'tersimpan' if ok else 'GAGAL simpan'} ke {TABEL} status={status}")
+        return nickname_ok if ok else None
+    else:
+        # 2026-10-31 per Bartes: HANYA SUCCESS yang masuk Supabase.
+        # Gagal tidak disimpan sama sekali, supaya stok di DB = stok
+        # yang benar-benar bisa dipakai follow, tidak manipulatif.
+        # Nama yang gagal tetap bisa dicoba lagi di run berikutnya,
+        # karena filter nama terpakai hanya membuang base SUCCESS.
+        log(f"    -> TIDAK disimpan ke {TABEL} (status={status}, hanya SUCCESS yang masuk DB)")
+        return None
 
 async def main():
     jumlah = int(os.getenv("JUMLAH", "3"))
