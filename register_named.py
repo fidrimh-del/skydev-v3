@@ -925,6 +925,23 @@ def load_custom_names():
         log(f"[!] Gagal baca list nama {path}: {type(e).__name__}, fallback saran server")
         return []
 
+async def load_used_bases():
+    try:
+        async with AsyncSession(impersonate="chrome110", verify=False) as session:
+            r = await session.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?select=nickname&limit=10000",
+                                  headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=15)
+            if r.status_code != 200:
+                return set()
+            bases = set()
+            for row in r.json():
+                nick = row.get("nickname")
+                if nick and "#" in nick:
+                    bases.add(nick.split("#", 1)[0])
+            return bases
+    except Exception:
+        return set()
+
+
 _exec_pool = None
 
 async def proses_satu_bot(idx, total, wanted_name):
@@ -967,6 +984,11 @@ async def main():
     all_names = []
     if name_mode == "list":
         all_names = load_custom_names()
+        used = await load_used_bases()
+        if used:
+            before = len(all_names)
+            all_names = [n for n in all_names if n not in used]
+            log(f"[*] List nama: {before} -> {len(all_names)} setelah buang {len(used)} nama yang sudah ada di {TABEL}")
         # Partisi per runner (matrix 20): runner 1 ambil index 0,20,40...,
         # runner 2 ambil 1,21,41..., dst. Jadi tidak ada nama ganda antar runner.
         if runner_total > 1:
