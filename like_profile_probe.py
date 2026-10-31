@@ -214,9 +214,9 @@ def get_bots(target_uuid, limit=8):
     if not url or not key:
         print("[-] SUPABASE_URL / SUPABASE_SERVICE_KEY tidak ada di env.")
         return []
+    _rpc = "get_fresh_named_bots" if os.getenv("BOT_TYPE", "accounts") == "named_bots" else "get_fresh_bots"
     req = urllib.request.Request(
-        _rpc = "get_fresh_named_bots" if os.getenv("BOT_TYPE", "accounts") == "named_bots" else "get_fresh_bots"
-    url + f"/rest/v1/rpc/{_rpc}",
+        url + f"/rest/v1/rpc/{_rpc}",
         data=json.dumps({"p_target_uuid": target_uuid,
                          "p_limit": limit}).encode("utf-8"),
         headers={"apikey": key, "Authorization": "Bearer " + key,
