@@ -4,13 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       jumlah:
-        description: 'Total jumlah bot yang dibuat (dibagi ke 20 runner)'
+        description: 'Jumlah bot yang dibuat (single runner, tanpa matrix)'
         required: false
-        default: '20'
+        default: '2'
       workers:
-        description: 'Paralel workers per runner'
+        description: 'Paralel workers'
         required: false
-        default: '20'
+        default: '2'
+      name_mode:
+        description: 'Sumber nama: list (custom_names_list.txt) atau suggestion (server)'
+        required: false
+        default: 'list'
 
 jobs:
   register:
@@ -28,11 +32,14 @@ jobs:
       - name: Install deps
         run: pip install curl_cffi
 
-
       - name: Register + Nickname
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           JUMLAH: ${{ inputs.jumlah }}
           WORKERS: ${{ inputs.workers }}
+          NAME_MODE: ${{ inputs.name_mode }}
+          CUSTOM_NAMES_FILE: custom_names_list.txt
+          RUNNER_INDEX: '1'
+          RUNNER_TOTAL: '1'
         run: python register_named.py
