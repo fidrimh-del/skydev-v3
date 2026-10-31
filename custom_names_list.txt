@@ -25,7 +25,6 @@ NightKing
 NightShadow
 StormKing
 ThunderLord
-FireSoul
 IceSoul
 WindSoul
 GhostKing
@@ -72,9 +71,6 @@ AbyssSoul
 InfernoKing
 HeavenSoul
 AngelKing
-DemonSoul
-DevilKing
-XxDevilxX
 XxxAngelxxX
 HolySoul
 BladeKing
@@ -121,7 +117,6 @@ XxxShadowxxX
 XxSoulxX
 XxxGhostxxX
 XxxProxxX
-XxxDevilxxX
 XxAngelxX
 XxWolfxX
 XxxWolfxxX
@@ -173,8 +168,6 @@ XxInfernoxX
 XxxInfernoxxX
 XxHeavenxX
 XxxHeavenxxX
-XxDemonxX
-XxxDemonxxX
 XxHolyxX
 XxxHolyxxX
 XxKnightxX
