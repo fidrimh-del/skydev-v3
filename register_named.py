@@ -951,14 +951,22 @@ async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
     loop = asyncio.get_event_loop()
 
     async def try_nickname(user_jwt_, alloc_, device_id_, wanted_, break_on_error):
-        # 4 sesi TCP, varian SET v6a-v6e di dalam tiap sesi.
-        # break_on_error=True untuk nama list: penolakan eksplisit
-        # (mis. profanity) itu permanen untuk nama itu, jangan buang
-        # 3 sesi lagi. break_on_error=False untuk saran server:
-        # tiap sesi bisa memberi saran baru, jadi saran yang ditolak
-        # satu sesi tidak berarti saran berikutnya juga ditolak.
+        # SPEED-UP 2026-10-31 per Bartes: 2 sesi TCP per percobaan,
+        # bukan 4. Alasan: akun yang diam gagal semua sesi (tes tahan
+        # socket, GET-first, email-dulu, dan fallback saran semua
+        # membuktikan akun diam tidak hidup di sesi ke-3/ke-4), dan
+        # akun yang hidup sukses di sesi pertama (varian v6a-v6e di
+        # dalam satu sesi itu sudah mencakup 5 varian SET). Jadi
+        # sesi ke-3 dan ke-4 kebanyakan buang ~30 detik per akun
+        # tanpa menambah sukses yang berarti, padahal rantai kita
+        # sudah punya banyak percobaan akun/nama lain (akun asli,
+        # akun baru nama sama, pengaman nama berbeda) yang memberi
+        # peluang baru yang lebih berharga daripada sesi ke-3/ke-4
+        # di akun yang sama. break_on_error=True untuk nama list:
+        # penolakan eksplisit (mis. profanity) itu permanen untuk
+        # nama itu, jangan buang sesi lagi.
         n_out, e_out = None, None
-        for _attempt in range(4):
+        for _attempt in range(2):
             n_out, e_out = await loop.run_in_executor(
                 exec_pool, tcp_nickname, user_jwt_, alloc_, device_id_, wanted_)
             if n_out and not e_out and "#" in n_out:
@@ -966,7 +974,7 @@ async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
             if e_out and break_on_error:
                 log(f"    -> Server menolak nama ini secara eksplisit: {e_out!r}, tidak di-retry")
                 break
-            if _attempt < 3:
+            if _attempt < 1:
                 log(f"    -> TCP sesi {_attempt+1} gagal (name={n_out!r} error={e_out!r}), retry sesi {_attempt+2}...")
                 await asyncio.sleep(2 + random.random() * 2)
         return None, n_out, e_out
@@ -993,10 +1001,9 @@ async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
     # akun pertama, akun pertama itu DIBUANG (tidak disimpan, sesuai
     # aturan hanya SUCCESS yang masuk DB), registrasi HTTP baru,
     # lalu coba NAMA LIST YANG SAMA lagi di akun baru. Kalau itu
-    # juga gagal, barulah coba SARAN SERVER di akun baru itu
-    # (profile mechanic akun baru kemungkinan masih hidup, jadi
-    # saran di sini bisa diberikan, tidak seperti di akun lama yang
-    # diam). Bot sukses list tetap pakai nama list; bot sukses
+    # juga gagal, langsung ke PENGAMAN NAMA BERBEDA di bawah
+    # (saran server di akun baru DIHAPUS 2026-10-31, 0/30 di 2 run
+    # terakhir). Bot sukses list tetap pakai nama list; bot sukses
     # fallback tetap tersimpan, dengan kredensial akun yang sukses
     # itu (bukan akun lama yang gagal). Hanya bot gagal yang
     # membayar biaya waktu fallback; bot sukses list tidak kena
@@ -1019,18 +1026,21 @@ async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
                 email, password, device_id, user_jwt = email2, password2, device_id2, user_jwt2
                 log(f"    -> nickname OK via FALLBACK AKUN BARU list: {nickname_ok}")
             else:
-                log(f"    -> FALLBACK SARAN AKUN BARU: nama list gagal juga "
-                    f"di akun baru (dapat: {name_out!r} error: {error_out!r}), "
-                    f"coba minta nama dari server di akun baru...")
-                nickname_ok, name_out, error_out = await try_nickname(
-                    user_jwt2, alloc2, device_id2, None, break_on_error=False)
-                if nickname_ok:
-                    email, password, device_id, user_jwt = email2, password2, device_id2, user_jwt2
-                    log(f"    -> nickname OK via FALLBACK AKUN BARU saran: {nickname_ok}")
+                # SPEED-UP 2026-10-31 per Bartes: SARAN DIHAPUS dari
+                # rantai. Bukti: run #14 saran 0/7, run manual maks10
+                # saran 0/23, total 0/30 bot sisa gagal yang diselamatkan
+                # saran. Saran di akun baru itu membayar 2 sesi TCP
+                # (~30 detik) untuk 0 sukses yang terbukti, padahal
+                # pengaman nama berbeda setelahnya yang menyelamatkan
+                # 7/7 dan 23/23 sisa gagal itu. Jadi langsung ke
+                # pengaman nama berbeda di bawah, tanpa saran.
+                log(f"    -> FALLBACK SARAN DILEWATI (0/30 di 2 run terakhir): "
+                    f"nama list gagal juga di akun baru (dapat: {name_out!r} "
+                    f"error: {error_out!r}), langsung ke PENGAMAN NAMA BERBEDA...")
     # PENGAMAN NAMA BERBEDA 2026-10-31 per Bartes: kalau SET ditolak
     # server / diam saja, retri lagi dengan nama LAIN sampai sukses.
     # Urutan sebelumnya sudah mencoba: akun pertama + nama asli,
-    # akun baru + nama asli, akun baru + saran server. Kalau semua
+    # akun baru + nama asli. Kalau semua
     # itu gagal, jangan langsung buang bot ini — coba nama list
     # BERBEDA, masing-masing dengan AKUN BARU, sampai ada yang
     # sukses. Nama berbeda diambil dari list partisi runner ini
@@ -1038,8 +1048,9 @@ async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
     # bot lain di run yang sama (duplikat antar bot tetap diizinkan
     # server, tapi dihindari di sini supaya stok nama tetap beragam).
     # BATAS PENGAMAN: maks 5 nama berbeda per bot (total percobaan
-    # per bot: asli akun1 + asli akun2 + saran akun2 + 5 nama berbeda
-    # akun baru = 7 akun, 28 sesi TCP maks). Batas ini bukan untuk
+    # per bot, setelah speed-up 2026-10-31: asli akun1 + asli akun2 +
+    # 5 nama berbeda akun baru = 7 akun, 14 sesi TCP maks, saran
+    # sudah dihapus). Batas ini bukan untuk
     # membatasi "sampai sukses" secara prinsip, tapi untuk mencegah
     # loop tak berhingga yang bisa timeout workflow 120 menit dan
     # menggagalkan semua bot di runner itu. Secara probabilitas,
