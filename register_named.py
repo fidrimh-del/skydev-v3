@@ -1,17 +1,45 @@
-"""register_named.py — CREATE BOT + NICKNAME dalam satu alur.
+"""register_named.py - CREATE BOT BERNAMA CEPAT (port dari outfit_test terbukti, untuk panel).
 
-Perbaikan dari register_referral.py + setup_nickname.py:
-  1. SATU script: registrasi HTTP -> langsung TCP set nickname.
-     Tidak perlu 2 workflow terpisah.
-  2. Nickname langsung pakai format TERBUKTI:
-     RoomEvent('profile_update') -> respons 'set_name_result'.
-     Tidak buang waktu coba 8 kandidat.
-  3. Timing KONSISTEN: delay tetap (bukan random), timeout tetap.
-  4. Simpan ke tabel `accounts` (standar) + kolom nickname.
+Dibuat dari nol berdasarkan dump.cs (bukan salinan register_named.py yang
+acak-acakan), untuk diuji di repo skydev-test agar skydev-v3 tidak terganggu.
 
-Jalankan di GitHub Actions via workflow register_named.yml.
-Env: SUPABASE_URL, SUPABASE_SERVICE_KEY, JUMLAH (default 3).
-Contoh: python register_named.py 5
+Alur, sesuai dump.cs:
+  1. HTTP registrasi ke account.faster.aftvrsys.com:
+     anonymous sign-up -> auth sessions -> users sessions (JWT)
+     -> email sign-up -> link credentials -> lobby allocation
+  2. TCP ke game server dari alokasi lobby (SOCK_STREAM, bukan UDP):
+     handshake -> login frame -> outfit -> GetDefaultNickname -> SetNickname
+  3. Hasil dicetak, TIDAK disimpan ke Supabase di tes ini.
+
+Protobuf, sesuai dump.cs (Multiplayer.Scripts.Serialization.Protobuf):
+  - LoginRequest: field 1 = userToken, field 2 = appVersion
+  - GetDefaultNicknameRequest: field 1 = EventId (12), field 2 = Language
+    (PERBAIKAN dari register_named.py yang salah memakai field 3)
+  - SetNicknameRequest: field 1 = EventId (0), field 2 = Name,
+    field 3 = DeviceId
+  - SetNicknameResponse: field 1 = Name, field 2 = ErrorMessage
+    (keduanya dicetak terpisah, supaya alasan penolakan terlihat)
+  - GetDefaultNicknameResponse: field 1 = DefaultNickname
+  - UpdateOutfitRequest: field 1 = EventId (1), field 2 = Outfit
+  - Outfit: field 1 = SlotId, field 2 = Items, field 3 = SkinColor
+  - Color: field 1 = R, field 2 = G, field 3 = B
+
+RoomEvent (ToxicBirdProfileMechanic di dump.cs):
+  - request command: "profile_update"
+  - response: "set_name_result", "default_nickname_result"
+
+Keamanan log:
+  - TIDAK PERNAH mencetak token, JWT, password, FSTR secret, atau
+    email lengkap. Email hanya 4 karakter pertama + ***.
+  - Nickname hasil server dicetak apa adanya, karena itu yang sedang dites,
+    dan akun ini adalah akun tes sekali pakai di repo tes.
+
+Env yang wajib (dari GitHub Secrets di workflow, jangan hardcode):
+  FSTR_APP_KEY, FSTR_APP_SECRET
+Env opsional: NICKNAME (kalau kosong, pakai saran server)
+
+Keluar: exit 0 bila SetNicknameResponse Name tidak kosong dan
+ErrorMessage kosong; exit 1 bila tidak.
 """
 
 import asyncio
@@ -28,32 +56,17 @@ import struct
 import sys
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 
 from curl_cffi.requests import AsyncSession
 
-try:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except ImportError:
-    pass
-
-# ============ KONFIGURASI ============
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-TABEL = "named_bots"
-
-APP_KEY = os.getenv("FSTR_APP_KEY") or "57a3d999-654c-4484-a20c-0f4b5512af49"
-APP_SECRET = os.getenv("FSTR_APP_SECRET") or "jWS5aLZacNVFx6PAxpXq2g4o"
 ACCOUNT_URL = "https://account.faster.aftvrsys.com"
 LOBBY_URL = "https://pkxd-lobby.aftvrsys.com"
 VERSION = "1.93.4"
 GAME_PROTOCOL = "1.93.0"
 
-# Timing konsisten (detik) — TIDAK random
-DELAY_ANTAR_BOT = 2.0
-TIMEOUT_TCP_CONNECT = 5
-TIMEOUT_TCP_READ = 8
+APP_KEY = os.getenv("FSTR_APP_KEY") or "57a3d999-654c-4484-a20c-0f4b5512af49"
+APP_SECRET = os.getenv("FSTR_APP_SECRET") or "jWS5aLZacNVFx6PAxpXq2g4o"
+
 
 HEADERS_BASE = {
     "User-Agent": "UnityPlayer/2022.3.62f3 (UnityWebRequest/1.0, libcurl/8.10.1-DEV)",
@@ -70,7 +83,6 @@ def log(msg):
     print(msg, flush=True)
 
 
-# ============ HELPER PROTOKOL ============
 def compute_signature(method, path, body_bytes):
     secret = APP_SECRET.encode("utf-8")
     h = hmac.new(secret, method.encode("utf-8"), hashlib.sha256).digest()
@@ -123,34 +135,113 @@ def build_login_frame(user_token):
     return build_named_frame(0x05, "login", pb)
 
 
-def build_nickname_protobuf(name, device_id):
-    # SetNicknameRequest: field1=0 (SetNickname), field2=name, field3=deviceId
+def build_get_default_nickname_protobuf(language="EN"):
+    # dump.cs: GetDefaultNicknameRequest field 1 = EventId (12),
+    # field 2 = Language. Bukan field 3.
+    return b"\x08" + varint(12) + pb_string(2, language)
+
+
+def build_set_nickname_protobuf(name, device_id):
+    # dump.cs: SetNicknameRequest field 1 = EventId (0),
+    # field 2 = Name, field 3 = DeviceId.
+    # device_id=None -> field 3 dihilangkan (varian debug v6).
+    if device_id is None:
+        return b"\x08" + varint(0) + pb_string(2, name)
     return b"\x08" + varint(0) + pb_string(2, name) + pb_string(3, device_id)
 
 
-def generate_nickname_local():
-    """Generate nickname lokal (Adjective+Animal) seperti pola server.
-    Tidak perlu GET dari server - langsung SET."""
-    import random
-    adjectives = ["Brave", "Swift", "Clever", "Mighty", "Gentle", "Fierce", "Calm", "Wild",
-                  "Happy", "Lucky", "Smart", "Quick", "Bold", "Cool", "Funny", "Kind",
-                  "Proud", "Silly", "Tidy", "Witty", "Zany", "Agile", "Bright", "Daring"]
-    animals = ["Lion", "Tiger", "Bear", "Wolf", "Fox", "Eagle", "Shark", "Dragon",
-               "Phoenix", "Unicorn", "Panda", "Koala", "Otter", "Beaver", "Falcon", "Hawk",
-               "Owl", "Raven", "Cobra", "Python", "Gecko", "Iguana", "Rhino", "Hippo"]
-    return random.choice(adjectives) + random.choice(animals)
+def build_set_nickname_no_event_protobuf(name, device_id):
+    # Varian debug v6: protobuf asli Google Protobuf MENGHILANGKAN field
+    # bernilai default (EventId=0 tidak diserialisasi sama sekali).
+    # Jadi bytes asli client kemungkinan hanya field 2 + field 3,
+    # tanpa \x08\x00 di depan. Coba varian ini juga.
+    return pb_string(2, name) + pb_string(3, device_id)
+
+
+def parse_connected_frame(frame):
+    """Parse frame Connected 0x03: playerId (4 byte BE) + playerKey.
+
+    playerKey TIDAK dicetak ke log (itu kunci sesi). Hanya panjang
+    dan cara decode-nya yang dilog, isi penuh hanya dipakai internal
+    sebagai kandidat DeviceId di varian v6a.
+    """
+    if len(frame) < 5 or frame[0] != 0x03:
+        return None, None
+    pid = int.from_bytes(frame[1:5], "big")
+    rest = frame[5:]
+    key = None
+    # Coba: varint length + string
+    try:
+        ln, n = read_varint(rest, 0)
+        if ln is not None and n + ln == len(rest):
+            key = rest[n:n + ln].decode("utf-8", "replace")
+    except Exception:
+        pass
+    if key is None:
+        # Coba: raw utf-8, buang null
+        try:
+            key = rest.decode("utf-8", "replace").strip("\x00")
+        except Exception:
+            key = None
+    return pid, key
+
+
+def build_update_nickname_protobuf(name):
+    # dump.cs: UpdateNicknameRequest field 1 = EventId (9),
+    # field 2 = Nickname. TIDAK ada DeviceId di request ini.
+    # Response: UpdateNicknameResponse field 1 = Name,
+    # field 2 = ErrorMessage, field 3 = Wallet, field 4 = Spent,
+    # event response: "update_name_result".
+    return b"\x08" + varint(9) + pb_string(2, name)
 
 
 def build_outfit_protobuf():
-    """UpdateOutfitRequest: f1=EventId(1=Update), f2=Outfit{f1=SlotId(0), f3=SkinColor{R=255,G=220,B=180}}.
-    Mengsimulasikan konfirmasi outfit (seperti tombol random di game) agar server
-    mengizinkan SetNicknameRequest. Items kosong = server pakai default."""
-    # SkinColor: f1=R, f2=G, f3=B
     skin = b"\x08" + varint(255) + b"\x10" + varint(220) + b"\x18" + varint(180)
-    # Outfit: f1=SlotId(0), f3=SkinColor
     outfit = b"\x08" + varint(0) + b"\x1a" + varint(len(skin)) + skin
-    # UpdateOutfitRequest: f1=EventId(1), f2=Outfit
     return b"\x08" + varint(1) + b"\x12" + varint(len(outfit)) + outfit
+
+
+def build_equip_protobuf(items, skin_rgb, hair_model=0, hair_style=0, bundle_code=0):
+    # EquipRequest dump.cs: field 1 Items (repeated int, packed),
+    # field 2 SkinColor (Color R/G/B), field 3 HairModel, field 4 HairStyle,
+    # field 5 BundleCode.
+    # TEMUAN v6 2026-10-30: EquipRequest ASLI dari game (EVT equip,
+    # OutfitLog_6) berisi field 5 BundleCode=14576, yang TIDAK
+    # pernah dikirim bot sebelumnya. Field itu kemungkinan kunci
+    # kenapa equip bot selalu diabaikan. Skin Color asli juga
+    # menghilangkan field 0 (R=0 tidak diserialisasi), jadi di
+    # sini R=0 juga dihilangkan supaya byte-nya persis game.
+    packed = b"".join(varint(i) for i in items)
+    out = b""
+    if packed:
+        out += b"\x0a" + varint(len(packed)) + packed
+    r, g, b = skin_rgb
+    skin = b""
+    if r:
+        skin += b"\x08" + varint(r)
+    if g:
+        skin += b"\x10" + varint(g)
+    if b:
+        skin += b"\x18" + varint(b)
+    out += b"\x12" + varint(len(skin)) + skin
+    if hair_model:
+        out += b"\x18" + varint(hair_model)
+    if hair_style:
+        out += b"\x20" + varint(hair_style)
+    if bundle_code:
+        out += b"\x28" + varint(bundle_code)
+    return out
+
+
+def parse_varint_stream(data):
+    out, i = [], 0
+    while i < len(data):
+        v, n = read_varint(data, i)
+        if v is None:
+            break
+        out.append(v)
+        i += n
+    return out
 
 
 def parse_protobuf_fields(data):
@@ -178,8 +269,51 @@ def parse_protobuf_fields(data):
     return fields
 
 
-def read_until(sock, pred, cap):
-    deadline = time.time() + cap
+def decode_hair_response(frames, want):
+    """Decode get_hair_styles / buy_hair_style payload secara lengkap.
+    GetInventory: field1 Successful(bool), field2 Inventory(packed int),
+    field3 ErrorMessage(string).
+    BuyResult: field1 Successful, field2 Inventory(packed), field3 Wallet
+    (pesan Money), field4 Spent (Money), field5 ErrorMessage.
+    Tanpa decode ini, tes sebelumnya hanya tahu event 'buy_hair_style'
+    muncul, tapi tidak tahu berhasil/gagal dan kenapa."""
+    for fr in frames:
+        ev, data = parse_room_event(fr)
+        if ev != want or not data:
+            continue
+        parts = []
+        for f, v in parse_protobuf_fields(data):
+            if isinstance(v, bytes):
+                # coba unpack packed int, kalau gagal tampilkan sebagai string
+                try:
+                    vals = parse_varint_stream(v)
+                    parts.append(f"field{f}=packed{vals}")
+                except Exception:
+                    parts.append(f"field{f}={v!r}")
+            else:
+                parts.append(f"field{f}={v}")
+        log(f"[*] HAIR RESP {want}: " + " ".join(parts))
+        return True
+    log(f"[*] HAIR RESP {want}: TIDAK DITEMUKAN di events")
+    return False
+
+
+def parse_room_event(frame):
+    """Kembalikan (event_name, data) atau (None, None) untuk frame RoomEvent."""
+    if len(frame) < 3 or frame[0] not in (0x05, 0x08):
+        return None, None
+    ln, n = read_varint(frame, 1)
+    if ln is None:
+        return None, None
+    try:
+        ev = frame[1 + n:1 + n + ln].decode("utf-8", "replace")
+    except Exception:
+        return None, None
+    return ev, frame[1 + n + ln:]
+
+
+def read_until(sock, want_events, cap_seconds, break_on_connected=False):
+    deadline = time.time() + cap_seconds
     buf = bytearray()
     frames = []
     sock.settimeout(0.25)
@@ -187,7 +321,7 @@ def read_until(sock, pred, cap):
         try:
             chunk = sock.recv(65536)
         except socket.timeout:
-            if pred(frames):
+            if any(parse_room_event(f)[0] in want_events for f in frames):
                 break
             continue
         except Exception:
@@ -204,12 +338,16 @@ def read_until(sock, pred, cap):
             fr = bytes(buf[4:4 + ln])
             del buf[:4 + ln]
             frames.append(fr)
+            if break_on_connected and len(fr) >= 1 and fr[0] == 0x03:
+                break
             if fr == b"\x01":
                 try:
                     sock.sendall(struct.pack(">I", 1) + b"\x02")
                 except Exception:
                     pass
-        if pred(frames):
+        if break_on_connected and any(len(f) >= 1 and f[0] == 0x03 for f in frames):
+            break
+        if any(parse_room_event(f)[0] in want_events for f in frames):
             break
     return frames
 
@@ -241,14 +379,11 @@ def find_host_port(body):
     return host, port
 
 
-# ============ REGISTRASI HTTP ============
 def random_device_id():
     return secrets.token_hex(8)
 
 
-def acak_email():
-    """Email unik anti-tabrakan dengan 60rb+ bot existing.
-    Username 14-18 char (vs 8-12 dulu) + prefix 'nb' penanda named-bot."""
+def random_email():
     domains = ["gmail.com", "yahoo.com", "outlook.com", "hotmail.com",
                "icloud.com", "protonmail.com", "yandex.com", "mail.com",
                "zoho.com"]
@@ -260,323 +395,159 @@ def acak_email():
     return f"{username}@{random.choice(domains)}"
 
 
-def acak_password():
+def random_password():
     return (random.choice(string.ascii_uppercase)
             + "".join(random.choices(string.ascii_lowercase,
                                       k=random.randint(6, 8)))
             + "".join(random.choices(string.digits, k=random.randint(3, 5))))
 
 
-def acak_nama():
-    """Generate nama valid: >4 huruf, hanya [a-z], tanpa spasi/simbol.
-    Server menolak nama <=4 huruf, karakter aneh, atau spasi."""
-    nama = "Ref" + "".join(random.choices(string.ascii_lowercase, k=6))
-    assert len(nama) > 4 and nama.isalpha(), f"nama tidak valid: {nama}"
-    return nama
-
-
-async def http_register(engine_session):
-    """6 langkah registrasi. Return (email, password, device_id, user_jwt)
-    atau (None, None, None, None) jika gagal."""
+async def http_register():
     device_id = random_device_id()
-    email = acak_email()
-    password = acak_password()
-
+    # V9: kalau TEST_EMAIL/TEST_PASSWORD diisi dari workflow (oleh
+    # pemilik akun tes sendiri), pakai itu, bukan acak. Kredensial
+    # ini TIDAK pernah dicetak ke log dan TIDAK disimpan ke file
+    # atau memori oleh script ini.
+    email = random_email()
+    password = random_password()
+    device_info = OrderedDict([
+        ("userAgent", ""), ("platform", "DESKTOP"),
+        ("system", "WindowsPlayer"),
+        ("systemVersion", "Windows 10  (10.0.19045) 64bit"),
+        ("manufacturer", "Unknown"), ("deviceModel", ""),
+        ("appVersion", VERSION), ("sdkVersion", ""), ("vendorId", ""),
+        ("advertisingId", ""), ("pushToken", ""), ("cloudId", ""),
+        ("carrierId", ""), ("timezone", "SE Asia Standard Time"),
+        ("language", "EN"), ("country", "Unknown"),
+        ("deviceId", device_id),
+    ])
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
-        try:
-            device_info = OrderedDict([
-                ("userAgent", ""), ("platform", "DESKTOP"),
-                ("system", "WindowsPlayer"),
-                ("systemVersion", "Windows 10  (10.0.19045) 64bit"),
-                ("manufacturer", "Unknown"), ("deviceModel", ""),
-                ("appVersion", VERSION), ("sdkVersion", ""), ("vendorId", ""),
-                ("advertisingId", ""), ("pushToken", ""), ("cloudId", ""),
-                ("carrierId", ""), ("timezone", "SE Asia Standard Time"),
-                ("language", "EN"), ("country", "Unknown"),
-                ("deviceId", device_id),
-            ])
+        async def req(path, payload, bearer=None):
+            body = json.dumps(payload, separators=(",", ":"),
+                              ensure_ascii=False).encode("utf-8")
+            h = HEADERS_BASE.copy()
+            if bearer:
+                h["Authorization"] = f"Bearer {bearer}"
+            h["x-fstr-signature"] = compute_signature("POST", path, body)
+            return await session.post(ACCOUNT_URL + path, data=body,
+                                      headers=h, timeout=30)
 
-            async def req(path, payload, bearer=None):
-                body = json.dumps(payload, separators=(",", ":"),
-                                  ensure_ascii=False).encode("utf-8")
-                h = HEADERS_BASE.copy()
-                if bearer:
-                    h["Authorization"] = f"Bearer {bearer}"
-                h["x-fstr-signature"] = compute_signature("POST", path, body)
-                return await session.post(ACCOUNT_URL + path, data=body,
-                                          headers=h, timeout=30)
+        log("[1/6] anonymous sign-up...")
+        r1 = await req("/v1/identity/anonymous/sign-up",
+                       {"deviceInfo": device_info})
+        if r1.status_code not in (200, 201):
+            log(f"[!] Langkah 1 gagal: HTTP {r1.status_code}")
+            return None
+        acc_token = r1.json().get("accessToken") or r1.json().get("token")
+        if not acc_token:
+            log("[!] Langkah 1: tidak ada access token di jawaban")
+            return None
 
-            # 1: anonymous sign-up
-            r1 = await req("/v1/identity/anonymous/sign-up",
-                           {"deviceInfo": device_info})
-            if r1.status_code in (1015, 429, 403) or "html" in r1.text.lower():
-                return None, None, None, None
-            acc_token = r1.json().get("token")
+        log("[2/6] auth sessions...")
+        r2 = await req("/v1/auth/sessions", OrderedDict([
+            ("identityProvider", "FASTER"),
+            ("credentials", {"type": "TOKEN", "token": acc_token}),
+            ("deviceInfo", device_info)]))
+        if r2.status_code not in (200, 201):
+            log(f"[!] Langkah 2 gagal: HTTP {r2.status_code}")
+            return None
+        auth_token = r2.json().get("authToken") or r2.json().get("token")
+        if not auth_token:
+            log("[!] Langkah 2: tidak ada auth token di jawaban")
+            return None
 
-            # 2: auth TOKEN
-            r2 = await req("/v1/auth/sessions", OrderedDict([
-                ("identityProvider", "FASTER"),
-                ("credentials", {"type": "TOKEN", "token": acc_token}),
-                ("deviceInfo", device_info)]))
-            if r2.status_code in (1015, 429, 403):
-                return None, None, None, None
-            auth_token = r2.json().get("authToken")
+        log("[3/6] users sessions (JWT)...")
+        r3 = await req("/v1/users/sessions", OrderedDict([
+            ("authToken", auth_token), ("deviceInfo", device_info)]))
+        user_jwt = r3.json().get("userToken")
+        if not user_jwt:
+            log(f"[!] Langkah 3 gagal: HTTP {r3.status_code}")
+            return None
 
-            # 3: user session -> JWT
-            r3 = await req("/v1/users/sessions", OrderedDict([
-                ("authToken", auth_token), ("deviceInfo", device_info)]))
-            user_jwt = r3.json().get("userToken")
-            if not user_jwt:
-                return None, None, None, None
-
-            # 4: email sign-up
-            await req("/v1/identity/email/sign-up", OrderedDict([
-                ("deviceInfo", device_info),
-                ("email", email), ("password", password)]))
-
-            # 5: link kredensial
-            r5 = await req("/v1/users/credentials/link", OrderedDict([
-                ("identityProvider", "FASTER"),
-                ("credentials", {"type": "EMAIL", "email": email,
-                                 "password": password})]), bearer=user_jwt)
-            if r5.status_code not in (200, 201):
-                return None, None, None, None
-
-            # 6: alokasi lobby (verifikasi)
-            p6 = {"userToken": user_jwt,
-                  "gameServerProtocolVersion": GAME_PROTOCOL,
-                  "isPrivate": False}
-            b6 = json.dumps(p6, separators=(",", ":"),
-                            ensure_ascii=False).encode("utf-8")
-            r6 = await session.post(LOBBY_URL + "/lobby/allocation", data=b6,
-                                    headers={k: v for k, v in
-                                             HEADERS_BASE.items()
-                                             if k != "x-fstr-application-key"},
-                                    timeout=30)
-            if r6.status_code not in (200, 201):
-                return None, None, None, None
-            alloc = r6.json()
-            return email, password, device_id, (user_jwt, alloc)
-        except Exception as e:
-            log(f"    [!] HTTP error: {str(e)[:60]}")
-            return None, None, None, None
+        # V5 - ALUR GAME NORMAL (info Bartes 2026-10-30):
+        # Pemain baru -> loading -> dunia/map -> pilih outfit ->
+        # input nama (sudah ada nama random server) -> tombol
+        # "main sebagai tamu" / "daftar dengan email".
+        # Jadi nickname di-SET SEBAGAI TAMU dulu, SEBELUM email.
+        # Email sign-up + link DITUNDA sampai SET berhasil, dan
+        # setelah daftar email pemain TIDAK dipindah ke server lain.
+        # Maka di sini HANYA: anonymous -> auth -> users -> lobby.
+        log("[4/4] lobby allocation (tamu)...")
+        p6 = {"userToken": user_jwt,
+              "gameServerProtocolVersion": GAME_PROTOCOL,
+              "isPrivate": False}
+        b6 = json.dumps(p6, separators=(",", ":"),
+                        ensure_ascii=False).encode("utf-8")
+        headers6 = {k: v for k, v in HEADERS_BASE.items()
+                    if k != "x-fstr-application-key"}
+        r6 = await session.post(LOBBY_URL + "/lobby/allocation", data=b6,
+                                headers=headers6, timeout=30)
+        if r6.status_code not in (200, 201):
+            log(f"[!] Langkah 4 gagal: HTTP {r6.status_code}")
+            return None
+        log(f"[+] Registrasi TAMU selesai untuk {email[:4]}*** "
+            f"(email belum di-link, sesuai alur game)")
+        return email, password, device_id, user_jwt, r6.json()
 
 
-# ============ NICKNAME VIA TCP ============
-def build_get_default_nickname_protobuf(language="EN"):
-    """Minta nickname auto-generate: ProfileEventId.GetDefaultNickname=12.
-    FIX: field3 = language (bukan device_id)! Sesuai dump.cs:
-    SendGetDefaultNicknameRequest(string language, ...)."""
-    return b"\x08" + varint(12) + pb_string(3, language)
+async def http_link_email(email, password, device_id, guest_jwt):
+    """Daftar dengan email SETELAH nickname berhasil, sesuai alur game.
 
-
-def tcp_set_dengan_saran(user_jwt, alloc, device_id, saran):
-    """SET nickname dengan saran yang sudah didapat (skip GET).
-    Return nickname jika berhasil, None jika gagal."""
-    host, port = find_host_port(alloc)
-    if not host or not port:
-        return None
-    try:
-        import socket as _sock, struct as _struct
-        s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-        s.settimeout(TIMEOUT_TCP_CONNECT)
-        s.connect((host, port))
-        s.sendall(_struct.pack(">I", 1) + b"\x03")
-    except Exception:
-        return None
-    resp = read_until(s, lambda fr: any(len(p) >= 5 and p[0] == 0x03 for p in fr), 6)
-    if not any(len(p) >= 5 and p[0] == 0x03 for p in resp):
-        s.close()
-        return None
-    try:
-        s.sendall(build_login_frame(user_jwt))
-        # Tunggu sebentar untuk login
-        import time as _time
-        _time.sleep(2)
-        # SET langsung
-        nama_fix = _kirim_set(s, saran, device_id, cari_nickname)
-        s.close()
-        return nama_fix
-    except Exception:
-        pass
-    try:
-        s.close()
-    except:
-        pass
-    return None
-
-def tcp_get_saran_only(user_jwt, alloc, device_id):
-    """Hanya GET saran nickname (tanpa SET). Untuk sesi anonymous.
-    Return nickname atau None."""
-    # Panggil tcp_get_nickname tapi dengan flag hanya-GET
-    # Implementasi: duplikat logika GET dari tcp_get_nickname
-    host, port = find_host_port(alloc)
-    if not host or not port:
-        return None
-    try:
-        import socket as _sock, struct as _struct
-        s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-        s.settimeout(TIMEOUT_TCP_CONNECT)
-        s.connect((host, port))
-        s.sendall(_struct.pack(">I", 1) + b"\x03")
-    except Exception:
-        return None
-    # Tunggu Connected
-    resp = read_until(s, lambda fr: any(len(p) >= 5 and p[0] == 0x03 for p in fr), 6)
-    if not any(len(p) >= 5 and p[0] == 0x03 for p in resp):
-        s.close()
-        return None
-    # Login
-    try:
-        s.sendall(build_login_frame(user_jwt))
-        resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 10)
-        saran = cari_nickname(resp)
-        if saran:
-            s.close()
-            return saran
-    except Exception:
-        pass
-    # Coba request explicit
-    try:
-        req_pb = build_get_default_nickname_protobuf("EN")
-        s.sendall(build_named_frame(0x08, "profile_update", req_pb))
-        resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 8)
-        saran = cari_nickname(resp)
-        s.close()
-        return saran
-    except Exception:
-        pass
-    try:
-        s.close()
-    except:
-        pass
-    return None
-
-def tcp_get_nickname(user_jwt, alloc, device_id):
-    """Ambil nickname auto-generate dari server.
-    Coba: (1) dengar default_nickname_result otomatis,
-          (2) request GetDefaultNickname (eventId=12).
-    Return nickname atau None."""
-    host, port = find_host_port(alloc)
-    if not host or not port:
-        log(f"    [!] TCP: host/port tidak ketemu")
-        return None
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(TIMEOUT_TCP_CONNECT)
-        s.connect((host, port))
-        s.sendall(struct.pack(">I", 1) + b"\x03")
-    except Exception as e:
-        log(f"    [!] TCP connect gagal: {e}")
-        return None
-
-    # Tunggu Connected
-    resp = read_until(
-        s, lambda fr: any(len(p) >= 5 and p[0] == 0x03 for p in fr), 6)
-    if not any(len(p) >= 5 and p[0] == 0x03 for p in resp):
-        log(f"    [!] TCP: tidak ada Connected")
-        s.close()
-        return None
-
-    # Login event
-    try:
-        s.sendall(build_login_frame(user_jwt))
-    except Exception as e:
-        log(f"    [!] TCP login gagal: {e}")
-        s.close()
-        return None
-
-    def cari_nickname(frames):
-        """Cari default_nickname_result atau set_name_result di frames."""
-        for p in frames:
-            if len(p) < 3 or p[0] not in (0x05, 0x08):
-                continue
-            ln, n = read_varint(p, 1)
-            if ln is None:
-                continue
-            try:
-                ev_s = p[1 + n:1 + n + ln].decode("utf-8", "replace")
-            except Exception:
-                continue
-            if ev_s not in ("default_nickname_result", "set_name_result"):
-                continue
-            data = p[1 + n + ln:]
-            if not data:
-                continue
-            for f, v in parse_protobuf_fields(data):
-                if f == 1 and isinstance(v, bytes):
-                    try:
-                        nama = v.decode("utf-8", "replace")
-                        if nama:
-                            return nama
-                    except Exception:
-                        pass
-        return None
-
-    # OUTFIT DULU (wajib sebelum GET - server tidak kasih saran tanpa outfit)
-    try:
-        outfit_pb = build_outfit_protobuf()
-        s.sendall(build_named_frame(0x08, "outfit", outfit_pb))
-        log(f"    [*] Kirim outfit...")
-    except Exception as e:
-        log(f"    [!] Outfit gagal: {e}")
-    # GET saran dari server
-    req_pb = build_get_default_nickname_protobuf("EN")
-    try:
-        s.sendall(build_named_frame(0x08, "profile_update", req_pb))
-        log(f"    [*] Minta nickname via RoomEvent (inisiasi)...")
-    except Exception as e:
-        log(f"    [!] Kirim gagal: {e}")
-        s.close()
-        return None
-    resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 8)
-    nama = cari_nickname(resp)
-    if not nama:
-        log(f"    [-] Server tidak memberi nickname")
-        s.close()
-        return None
-    log(f"    [+] Dapat nickname: {nama}")
-    # SET dengan saran server (custom DITOLAK)
-    nama_fix = _kirim_set(s, nama, device_id, cari_nickname)
-    s.close()
-    return nama_fix
-
-
-def _kirim_set(s, nama, device_id, cari_nickname):
-    """Kirim SetNicknameRequest dan tunggu konfirmasi. Return nama terkonfirmasi atau None."""
-    import time as _t
-    # OUTFIT WAJIB (server tidak kasih saran nama sebelum outfit)
-    try:
-        set_pb = build_nickname_protobuf(nama, device_id)
-        s.sendall(build_named_frame(0x08, "profile_update", set_pb))
-        log(f"    [*] Kirim SET nickname: {nama}...")
-    except Exception as e:
-        log(f"    [!] Kirim SET gagal: {e}")
-        return None
-    # Tunggu konfirmasi (20 dtk, early-return jika tiba)
-    resp = read_until(s, lambda fr: cari_nickname(fr) is not None, 20)
-    nama_fix = cari_nickname(resp)
-    if nama_fix and "#" in nama_fix:
-        log(f"    [+] Nickname TERKONFIRMASI: {nama_fix}")
-        return nama_fix
-    log(f"    [!] SET gagal/tidak terkonfirmasi (nama: {nama_fix})")
-    return None
+    Email sign-up lalu link credentials dengan bearer JWT tamu.
+    Mengembalikan True bila link HTTP 200/201.
+    """
+    device_info = OrderedDict([
+        ("userAgent", ""), ("platform", "DESKTOP"),
+        ("system", "WindowsPlayer"),
+        ("systemVersion", "Windows 10  (10.0.19045) 64bit"),
+        ("manufacturer", "Unknown"), ("deviceModel", ""),
+        ("appVersion", VERSION), ("sdkVersion", ""), ("vendorId", ""),
+        ("advertisingId", ""), ("pushToken", ""), ("cloudId", ""),
+        ("carrierId", ""), ("timezone", "SE Asia Standard Time"),
+        ("language", "EN"), ("country", "Unknown"),
+        ("deviceId", device_id),
+    ])
+    async with AsyncSession(impersonate="chrome110", verify=False) as session:
+        async def req(path, payload, bearer=None):
+            body = json.dumps(payload, separators=(",", ":"),
+                              ensure_ascii=False).encode("utf-8")
+            h = HEADERS_BASE.copy()
+            if bearer:
+                h["Authorization"] = f"Bearer {bearer}"
+            h["x-fstr-signature"] = compute_signature("POST", path, body)
+            return await session.post(ACCOUNT_URL + path, data=body,
+                                      headers=h, timeout=30)
+        log("[*] Daftar dengan email (setelah SET nickname)...")
+        await req("/v1/identity/email/sign-up", OrderedDict([
+            ("deviceInfo", device_info), ("email", email),
+            ("password", password)]))
+        r5 = await req("/v1/users/credentials/link", OrderedDict([
+            ("identityProvider", "FASTER"),
+            ("credentials", {"type": "EMAIL", "email": email,
+                             "password": password})]), bearer=guest_jwt)
+        log(f"[*] Link email HTTP {r5.status_code}")
+        return r5.status_code in (200, 201)
 
 
 async def email_login_jwt(email, password, device_id):
-    """Login fresh via EMAIL -> user JWT (seperti setup_nickname.py)."""
+    """Login ulang via EMAIL untuk JWT yang valid untuk TCP.
+
+    Catatan dari register_named.py: JWT registrasi terbukti tidak valid
+    untuk TCP (0/8 gagal tanpa login ulang ini), jadi SET harus pakai
+    JWT hasil email sign-in, bukan JWT registrasi.
+    """
+    device_info = OrderedDict([
+        ("userAgent", ""), ("platform", "DESKTOP"),
+        ("system", "WindowsPlayer"),
+        ("systemVersion", "Windows 10  (10.0.19045) 64bit"),
+        ("manufacturer", "Unknown"), ("deviceModel", ""),
+        ("appVersion", VERSION), ("sdkVersion", ""), ("vendorId", ""),
+        ("advertisingId", ""), ("pushToken", ""), ("cloudId", ""),
+        ("carrierId", ""), ("timezone", "SE Asia Standard Time"),
+        ("language", "EN"), ("country", "Unknown"),
+        ("deviceId", device_id),
+    ])
     async with AsyncSession(impersonate="chrome110", verify=False) as session:
-        device_info = OrderedDict([
-            ("userAgent", ""), ("platform", "DESKTOP"),
-            ("system", "WindowsPlayer"),
-            ("systemVersion", "Windows 10  (10.0.19045) 64bit"),
-            ("manufacturer", "Unknown"), ("deviceModel", ""),
-            ("appVersion", VERSION), ("sdkVersion", ""), ("vendorId", ""),
-            ("advertisingId", ""), ("pushToken", ""), ("cloudId", ""),
-            ("carrierId", ""), ("timezone", "SE Asia Standard Time"),
-            ("language", "EN"), ("country", "Unknown"),
-            ("deviceId", device_id),
-        ])
         p1 = OrderedDict([
             ("identityProvider", "FASTER"),
             ("credentials", {"type": "EMAIL", "email": email,
@@ -590,9 +561,11 @@ async def email_login_jwt(email, password, device_id):
         r1 = await session.post(ACCOUNT_URL + "/v1/auth/sessions", data=b1,
                                 headers=h1, timeout=20)
         if r1.status_code != 200:
+            log(f"[!] Email login langkah 1 gagal: HTTP {r1.status_code}")
             return None, None
-        auth_token = r1.json().get("authToken")
-
+        auth_token = r1.json().get("authToken") or r1.json().get("token")
+        if not auth_token:
+            return None, None
         p2 = OrderedDict([("authToken", auth_token),
                           ("deviceInfo", device_info)])
         b2 = json.dumps(p2, separators=(",", ":"),
@@ -605,16 +578,15 @@ async def email_login_jwt(email, password, device_id):
         user_jwt = r2.json().get("userToken")
         if not user_jwt:
             return None, None
-
         p3 = {"userToken": user_jwt,
               "gameServerProtocolVersion": GAME_PROTOCOL,
               "isPrivate": False}
         b3 = json.dumps(p3, separators=(",", ":"),
                         ensure_ascii=False).encode("utf-8")
-        r3 = await session.post(
-            LOBBY_URL + "/lobby/allocation", data=b3,
-            headers={k: v for k, v in HEADERS_BASE.items()
-                     if k != "x-fstr-application-key"}, timeout=20)
+        headers3 = {k: v for k, v in HEADERS_BASE.items()
+                    if k != "x-fstr-application-key"}
+        r3 = await session.post(LOBBY_URL + "/lobby/allocation", data=b3,
+                                headers=headers3, timeout=20)
         try:
             alloc = r3.json()
         except Exception:
@@ -622,7 +594,303 @@ async def email_login_jwt(email, password, device_id):
         return user_jwt, alloc
 
 
-# ============ SIMPAN KE SUPABASE ============
+def events_in(frames):
+    out = []
+    for fr in frames:
+        ev, _ = parse_room_event(fr)
+        if ev:
+            out.append(ev)
+        elif fr:
+            out.append(f"frame_type={fr[0]:#x}_len={len(fr)}")
+    return out
+
+
+def tcp_nickname(user_jwt, alloc, device_id, wanted_name=None):
+    is_custom = wanted_name is not None
+    host, port = find_host_port(alloc)
+    if not host or not port:
+        log("[!] TCP: host/port game server tidak ketemu dari alokasi lobby")
+        return None, None
+    log(f"[*] TCP connect ke game server (host disembunyikan, port {port})...")
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.connect((host, port))
+        s.sendall(struct.pack(">I", 1) + b"\x03")
+    except Exception as e:
+        log(f"[!] TCP connect gagal: {type(e).__name__}")
+        return None, None
+    resp = read_until(s, set(), 6, break_on_connected=True)
+    connected = any(len(f) >= 1 and f[0] == 0x03 for f in resp)
+    player_id = None
+    player_key = None
+    for fr in resp:
+        if len(fr) >= 1 and fr[0] == 0x03:
+            player_id, player_key = parse_connected_frame(fr)
+            break
+    # JoinedRoom frame 0x06 juga dicatat, tanpa isi sensitif.
+    joined_rooms = []
+    for fr in resp:
+        if len(fr) >= 6 and fr[0] == 0x06:
+            joined_rooms.append(int.from_bytes(fr[2:6], "big"))
+    log(f"[*] Connected frame (0x03) diterima: {connected}, "
+        f"playerId={player_id}, playerKey_len="
+        f"{len(player_key) if player_key else 0}, "
+        f"auto_joined_rooms={joined_rooms}, events awal: {events_in(resp)}")
+    # Login frame, sesuai dump.cs LoginRequest field 1/2
+    try:
+        s.sendall(build_login_frame(user_jwt))
+        log("[*] Login frame terkirim, dengar saran otomatis 3 detik (kalau tidak ada, langsung GET eksplisit)...")
+    except Exception as e:
+        log(f"[!] Login frame gagal: {type(e).__name__}")
+        s.close()
+        return None, None
+
+    # OUTFIT DEBUG 2026-10-30 (Bartes: outfit masih kosong/default
+    # setelah nama berhasil): JANGAN kirim UpdateOutfit kosong dulu.
+    # Hipotesis: UpdateOutfit dengan Items kosong justru mengosongkan
+    # outfit, sehingga di game avatar terlihat kosong/default.
+    # Tes kontrol ini: nickname saja, tanpa outfit sama sekali,
+    # lalu setelah nickname berhasil, GET outfit dari server
+    # (OutfitRequest EventId=0) untuk melihat outfit bawaan server.
+    log("[*] OUTFIT DEBUG: outfit kosong TIDAK dikirim dulu (kontrol)")
+
+    suggestion = None
+    if not wanted_name:
+        # 1) Dengar dulu saran otomatis setelah login, seperti
+        #    tcp_get_saran_only di script lama (dulu 10 detik, kini 3 detik:
+    #    kalau tidak ada saran otomatis, GET eksplisit langsung
+    #    berhasil dalam 0,06 detik di tes FierceAlligator, jadi
+    #    menunggu 10 detik itu murni terbuang).
+        frames = read_until(s, {"default_nickname_result"}, 3)
+        log(f"[*] Events setelah login+outfit: {events_in(frames)}")
+        for fr in frames:
+            ev, data = parse_room_event(fr)
+            if ev == "default_nickname_result" and data:
+                for f, v in parse_protobuf_fields(data):
+                    if f == 1 and isinstance(v, bytes):
+                        suggestion = v.decode("utf-8", "replace")
+                        break
+            if suggestion:
+                break
+        # 2) Kalau tidak ada saran otomatis, baru kirim GET eksplisit
+        #    (field 2 = bahasa, perbaikan dari field 3 di script lama).
+        if not suggestion:
+            log("[*] Tidak ada saran otomatis, kirim GET eksplisit "
+                "(GetDefaultNickname, field 2 = EN)...")
+            try:
+                s.sendall(build_named_frame(
+                    0x08, "profile_update",
+                    build_get_default_nickname_protobuf("EN")))
+            except Exception as e:
+                log(f"[!] Kirim GET nickname gagal: {type(e).__name__}")
+                s.close()
+                return None, None
+            frames = read_until(s, {"default_nickname_result"}, 5)
+            log(f"[*] Events setelah GET eksplisit: {events_in(frames)}")
+            for fr in frames:
+                ev, data = parse_room_event(fr)
+                if ev == "default_nickname_result" and data:
+                    for f, v in parse_protobuf_fields(data):
+                        if f == 1 and isinstance(v, bytes):
+                            suggestion = v.decode("utf-8", "replace")
+                            break
+                if suggestion:
+                    break
+        log(f"[*] Saran nickname dari server: {suggestion!r}")
+        if not suggestion:
+            log("[!] Server tidak memberi saran nickname")
+            s.close()
+            return None, None
+        wanted_name = suggestion
+
+    # V6 - DEBUG SAMPAI BERHASIL (izin Bartes 2026-10-30):
+    # Tetap alur tamu v5, tapi SET dicoba beberapa varian berurutan
+    # di socket yang sama, berhenti di varian pertama yang berhasil.
+    # Varian diuji karena dump.cs tidak menunjukkan isi method
+    # SendSetNicknameRequest (hanya signature: nickname saja), jadi
+    # sumber DeviceId yang sebenarnya belum terbukti.
+    def try_set(label, pb_bytes, wait=2, send_twice=False):
+        log(f"[*] Varian {label}: kirim SET {wanted_name!r}...")
+        try:
+            frame = build_named_frame(0x08, "profile_update", pb_bytes)
+            s.sendall(frame)
+            if send_twice:
+                s.sendall(frame)
+                log("[*] Varian kirim 2x (seperti search di lookup_uuid)")
+        except Exception as e:
+            log(f"[!] Varian {label} kirim gagal: {type(e).__name__}")
+            return None, None
+        frames = read_until(s, {"set_name_result"}, wait)
+        log(f"[*] Events setelah varian {label}: {events_in(frames)}")
+        n_out, e_out = None, None
+        for fr in frames:
+            ev, data = parse_room_event(fr)
+            if ev == "set_name_result" and data:
+                for f, v in parse_protobuf_fields(data):
+                    if f == 1 and isinstance(v, bytes):
+                        n_out = v.decode("utf-8", "replace")
+                    if f == 2 and isinstance(v, bytes):
+                        e_out = v.decode("utf-8", "replace")
+                break
+        log(f"[*] Varian {label}: Name={n_out!r} ErrorMessage={e_out!r}")
+        return n_out, e_out
+
+    # TES URUTAN ONBOARDING 2026-10-31 (izin Bartes, pilih opsi ini):
+    # Di game, layar outfit muncul SEBELUM layar nama. Jadi kirim
+    # Equip 7396/13 SEBELUM SET nickname, saat akun masih tamu /
+    # onboarding, lalu equip yang sama dikirim lagi setelah nickname
+    # (kode equip pasca-nickname di bawah tetap jalan). Ini satu
+    # variabel waktu saja: item, gaya, base, bundle sama persis.
+    # RANDOM SEMUANYA 2026-10-31 (izin Bartes, 1 bot): pilih acak
+    # dari pool gratis OutfitLog_5_2w03.txt, pola yang terbukti
+    # di CoolBoar: HairModel=id rambut, HairStyle=0, tanpa buy,
+    # baju/celana sebagai PASANGAN (utama, material), slot
+    # berbayar (Hat, Ear, Back, Companion) = 0, tangan 17,17,
+    # sepatu 59,59, kacamata 0. Seed dicetak supaya pilihan
+    # ini bisa direproduksi dan dicek satu per satu oleh Bartes.
+    skin_pool = [(255,208,176),(255,182,133),(255,168,109),(255,146,72),(217,123,59),(185,98,40),(147,80,47),(110,51,37),(95,41,3),(60,26,2),(0,130,234),(135,220,236),(174,142,237),(137,62,218),(203,64,227),(238,65,153),(252,59,76),(255,143,151),(255,194,211),(255,109,29),(255,204,0),(255,215,122),(98,227,162),(151,203,99),(6,194,0),(239,239,239),(173,173,173)]
+    face_pool = [354,353,352,351,350,349,348,347,346,345,118,117,116,115,114,113,112,43,42,41,40,39,38,37,36,35,34,6,5]
+    hair_pool = [7396,5210,617,611,162,83,81,79,62]
+    shirt_pairs = [(6179,6178),(13,5697),(13,1397),(13,33),(13,28),(13,19)]
+    pants_pairs = [(5696,5699),(125,149),(15,154),(15,153)]
+    rand_seed = int(time.time())
+    rng = random.Random(rand_seed)
+    rand_skin_idx = rng.randrange(len(skin_pool))
+    rand_skin = skin_pool[rand_skin_idx]
+    rand_face = rng.choice(face_pool)
+    rand_hair = rng.choice(hair_pool)
+    rand_shirt = rng.choice(shirt_pairs)
+    rand_pants = rng.choice(pants_pairs)
+    pre_items = [0, 0, 0, rand_hair, 4636, 16, rand_face, rand_shirt[0], rand_shirt[1], rand_pants[0], rand_pants[1], 17, 17, 59, 59, 0, 0, 0, 0]
+    log(f"[*] RANDOM SEED={rand_seed} skin_slot={rand_skin_idx} skin_rgb={rand_skin} face={rand_face} hair={rand_hair} shirt={rand_shirt} pants={rand_pants} items={pre_items}")
+    try:
+        s.sendall(build_named_frame(
+            0x08, "equip",
+            build_equip_protobuf(pre_items, rand_skin, rand_hair, 0, 14576)))
+        log(f"[*] EQUIP SEBELUM NICKNAME RANDOM: hair={rand_hair} HairStyle=0 items={pre_items}")
+        pre_frames = read_until(s, set(), 3 if is_custom else 0.2)
+        log(f"[*] EQUIP SEBELUM NICKNAME events: {events_in(pre_frames)}")
+    except Exception as e:
+        log(f"[!] EQUIP SEBELUM NICKNAME gagal: {type(e).__name__}")
+    variants = []
+    if player_key:
+        variants.append(("v6a DeviceId=playerKey",
+                         build_set_nickname_protobuf(wanted_name, player_key),
+                         False))
+    variants.append(("v6b DeviceId=kosong",
+                     build_set_nickname_protobuf(wanted_name, None), False))
+    variants.append(("v6c tanpa field EventId",
+                     build_set_nickname_no_event_protobuf(wanted_name,
+                                                          device_id),
+                     False))
+    variants.append(("v6d kirim 2x DeviceId=registrasi",
+                     build_set_nickname_protobuf(wanted_name, device_id),
+                     True))
+    # v6e: JoinRoom dulu, lalu SET. Room dari suffix gameServerId
+    # alokasi, fallback room 0. Format join dari lookup_uuid.py:
+    # payload 0x06 + room_id big-endian.
+    gsid = alloc.get("gameServerId", "") if isinstance(alloc, dict) else ""
+    room_id = None
+    if "::" in gsid:
+        try:
+            room_id = int(gsid.rsplit("::", 1)[1])
+        except Exception:
+            room_id = None
+    if room_id is None:
+        room_id = 0
+    name_out, error_out = None, None
+    for label, pb_bytes, twice in variants:
+        name_out, error_out = try_set(label, pb_bytes, send_twice=twice)
+        if name_out and not error_out:
+            break
+    if not (name_out and not error_out):
+        log(f"[*] Varian v6e JoinRoom({room_id}) dulu, lalu SET...")
+        try:
+            s.sendall(struct.pack(">I", 5) + bytes([0x06])
+                      + struct.pack(">I", room_id))
+            join_frames = read_until(s, set(), 0.2)
+            log(f"[*] Events setelah JoinRoom: {events_in(join_frames)}")
+        except Exception as e:
+            log(f"[!] JoinRoom gagal: {type(e).__name__}")
+        name_out, error_out = try_set(
+            "v6e setelah JoinRoom",
+            build_set_nickname_protobuf(wanted_name, device_id))
+    if name_out and not error_out:
+        # OUTFIT DEBUG: GET outfit dari server di socket yang sama,
+        # sebelum socket ditutup. Command "outfit", OutfitRequest
+        # EventId=0 (GetAll). Response GetOutfitResponse: field 1
+        # EventId, field 2 Success (bool), field 3 ErrorMessage,
+        # field 4 repeated Outfit (slot/items/skin).
+        try:
+            s.sendall(build_named_frame(0x08, "outfit",
+                                        b"\x08" + varint(0)))
+            log("[*] OUTFIT DEBUG: kirim GetAllOutfits...")
+            frames = read_until(s, {"outfit_get_all"}, 5)
+            log(f"[*] OUTFIT DEBUG events: {events_in(frames)}")
+            for fr in frames:
+                ev, data = parse_room_event(fr)
+                if ev != "outfit_get_all" or not data:
+                    continue
+                for f, v in parse_protobuf_fields(data):
+                    if f == 2:
+                        log(f"[*] OUTFIT DEBUG GetAll Success={bool(v)}")
+                    if f == 3 and isinstance(v, bytes):
+                        log(f"[*] OUTFIT DEBUG GetAll Error="
+                            f"{v.decode('utf-8', 'replace')!r}")
+                    if f == 4 and isinstance(v, bytes):
+                        slot, items, skin = None, [], None
+                        for of, ov in parse_protobuf_fields(v):
+                            if of == 1:
+                                slot = ov
+                            if of == 2:
+                                if isinstance(ov, bytes):
+                                    items.extend(parse_varint_stream(ov))
+                                else:
+                                    items.append(ov)
+                            if of == 3 and isinstance(ov, bytes):
+                                rgb = {}
+                                for cf, cv in parse_protobuf_fields(ov):
+                                    rgb[cf] = cv
+                                skin = rgb
+                        log(f"[*] OUTFIT DEBUG slot={slot} "
+                            f"items={items} skin={skin}")
+        except Exception as e:
+            log(f"[!] OUTFIT DEBUG GetAll gagal: {type(e).__name__}")
+        # RAMBUT BARU 7396/13 2026-10-31 (log baru Bartes, akun baru
+        # hanya ganti rambut): ITEM_CLICK 7396, SETEQUIP 7396 slot3,
+        # HAIRSTYLE id=13 color gelap (12,5,0). Pasangan ini dari
+        # akun baru yang semuanya masih default, jadi kemungkinan
+        # gratis / dimiliki akun baru tanpa beli — berbeda dari
+        # 609/60 yang terbukti berbayar di salon (NoisyHyena).
+        # Tes ini satu variabel dari base FunnyArmadillo: hanya
+        # rambut diubah ke 7396/13, tanpa buy, EquipRequest Bundle
+        # 14576, sisanya persis base.
+        skin_rgb = rand_skin
+        equip_items = pre_items
+        # v10: TANPA BUY. EQUIP final user (OutfitLog_4_6v48 baris 178-180)
+        # mengirim HairModel=7396 dengan field4 HairStyle DIHILANGKAN (=0),
+        # BUKAN 13. HAIRSTYLE 13 di UI ternyata hanya warna lokal,
+        # bukan field server. Jadi tes ini: 7396/0, tanpa buy.
+        try:
+            s.sendall(build_named_frame(
+                0x08, "equip",
+                build_equip_protobuf(equip_items, skin_rgb, rand_hair, 0, 14576)))
+            log(f"[*] EQUIP RANDOM SETELAH NICKNAME: items={pre_items} hair={rand_hair} HairStyle=0 TANPA buy bundle=14576")
+            frames = read_until(s, set(), 0.2)
+            log(f"[*] EQUIP DEBUG events: {events_in(frames)}")
+        except Exception as e:
+            log(f"[!] EQUIP DEBUG gagal: {type(e).__name__}")
+    s.close()
+    log(f"[*] HASIL v6: Name={name_out!r} ErrorMessage={error_out!r}")
+    return name_out, error_out
+
+
+# ============ PANEL SUPABASE (named_bots, terpisah dari accounts) ============
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+TABEL = "named_bots"
+
 async def save_bot(session, email, password, device_id, nickname, status):
     endpoint = f"{SUPABASE_URL}/rest/v1/{TABEL}"
     headers = {"apikey": SUPABASE_KEY,
@@ -633,128 +901,99 @@ async def save_bot(session, email, password, device_id, nickname, status):
                "device_id": device_id, "status": status,
                "nickname": nickname}
     try:
-        r = await session.post(endpoint, json=payload, headers=headers,
-                               timeout=15)
+        r = await session.post(endpoint, json=payload, headers=headers, timeout=15)
         return r.status_code == 201
     except Exception:
         return False
 
+def load_custom_names():
+    path = os.getenv("CUSTOM_NAMES_FILE", "custom_names_list.txt")
+    try:
+        with open(path, encoding="utf-8") as f:
+            names = [ln.strip() for ln in f if ln.strip()]
+        # Validasi dasar: >4 huruf, tanpa spasi/nomor/simbol aneh di Latin,
+        # kana Jepang / Hangul Korea saja untuk nama Asia (sesuai dump validator).
+        out = []
+        for n in names:
+            if len(n) <= 4:
+                continue
+            if " " in n:
+                continue
+            out.append(n)
+        return out
+    except Exception as e:
+        log(f"[!] Gagal baca list nama {path}: {type(e).__name__}, fallback saran server")
+        return []
 
-# ============ MAIN ============
 _exec_pool = None
 
-async def proses_satu_bot(idx, total):
+async def proses_satu_bot(idx, total, wanted_name):
     global _exec_pool
     exec_pool = _exec_pool
     log(f"[{idx}/{total}] Registrasi HTTP...")
-    email, password, device_id, jwt_alloc = await http_register(None)
-    if not email:
-        log(f"    -> GAGAL registrasi")
-        return False
-
-    user_jwt, alloc = jwt_alloc
-    user_jwt_anon, alloc_anon = user_jwt, alloc  # SIMPAN anonymous untuk GET
-    log(f"    -> {email[:4]}*** terdaftar, ambil nickname auto-generate...")
-
-    # Jeda 5 detik (game normal max 5s, 30s tidak berguna)
-    await asyncio.sleep(5)
-
-    # FIX 2026-10-30: GET saran dengan JWT ANONYMOUS (sebelum link email)
-    # Sesuai alur game: minta saran SEBELUM login email
-    log(f"    -> GET saran nickname via ANONYMOUS...")
-    loop_anon = asyncio.get_event_loop()
-    saran_anon = await loop_anon.run_in_executor(
-        exec_pool, tcp_get_saran_only, user_jwt_anon, alloc_anon, device_id)
-    if saran_anon:
-        log(f"    [+] Saran dari anonymous: {saran_anon}")
-    else:
-        log(f"    [!] GET anonymous gagal, coba via email...")
-
-    # Login ULANG via EMAIL untuk dapat JWT yang valid untuk TCP
-    # (JWT registrasi TIDAK valid untuk TCP - sudah terbukti 0/8 gagal tanpa ini)
-    log(f"    -> login ulang via EMAIL...")
-    user_jwt2, alloc2 = await email_login_jwt(email, password, device_id)
-    if not user_jwt2:
-        log(f"    [!] login ulang gagal, pakai JWT registrasi")
-    else:
-        user_jwt, alloc = user_jwt2, alloc2
-
-    # Ambil nickname dengan RETRY 3x (fresh TCP socket tiap attempt).
-    # Alasan: retry dalam _kirim_set pakai socket yang sama (mungkin stale).
-    # FIX: jika saran_anon ada, pakai itu (dari sesi anonymous, sesuai alur game)
+    reg = await http_register()
+    if not reg:
+        log("    -> GAGAL registrasi")
+        return None
+    email, password, device_id, user_jwt, alloc = reg
+    log(f"    -> {email[:4]}*** terdaftar, TCP nickname+outfit...")
     loop = asyncio.get_event_loop()
-    nickname_ok = None
-    if 'saran_anon' in locals() and saran_anon:
-        log(f"    -> pakai saran dari anonymous: {saran_anon}")
-        # SET langsung dengan saran_anon (skip GET)
-        for _r in range(3):
-            nickname_ok = await loop.run_in_executor(
-                exec_pool, tcp_set_dengan_saran, user_jwt, alloc, device_id, saran_anon)
-            if nickname_ok and "#" in nickname_ok:
-                break
-            await asyncio.sleep(5)
-    else:
-        for _r in range(3):
-            nickname_ok = await loop.run_in_executor(
-                exec_pool, tcp_get_nickname, user_jwt, alloc, device_id)
-            if nickname_ok and "#" in nickname_ok:
-                break
-            log(f"    -> attempt {_r+1} belum dapat # (dapat: {nickname_ok}), retry...")
-            if _r < 2:
-                await asyncio.sleep(15)
-
-    # KETAT: hanya nama dengan # yang berarti server benar-benar simpan
-    # (set_name_result). Tanpa # = saran saja, JANGAN dianggap sukses.
-    status = "SUCCESS"
-    if nickname_ok and "#" in nickname_ok:
+    name_out, error_out = await loop.run_in_executor(
+        exec_pool, tcp_nickname, user_jwt, alloc, device_id, wanted_name)
+    nickname_ok = name_out if (name_out and not error_out and "#" in name_out) else None
+    status = "NICK_FAIL"
+    linked = False
+    if nickname_ok:
         log(f"    -> nickname OK (server): {nickname_ok}")
+        linked = await http_link_email(email, password, device_id, user_jwt)
+        log(f"    -> link email: {linked}")
+        status = "SUCCESS" if linked else "EMAIL_FAIL"
     else:
-        log(f"    -> nickname GAGAL/tak terkonfirmasi server (dapat: {nickname_ok})")
-        nickname_ok = None
-        status = "NICK_FAIL"
-
-    async with AsyncSession(impersonate="chrome110",
-                            verify=False) as session:
-        ok = await save_bot(session, email, password, device_id,
-                            nickname_ok, status)
-    log(f"    -> {'tersimpan' if ok else 'GAGAL simpan'} ke DB")
-    # Return nickname (untuk hitung yang ada #)
-    return nickname_ok if (ok and nickname_ok and "#" in nickname_ok) else None
-
+        log(f"    -> nickname GAGAL (dapat: {name_out!r} error: {error_out!r})")
+    async with AsyncSession(impersonate="chrome110", verify=False) as session:
+        ok = await save_bot(session, email, password, device_id, nickname_ok, status)
+    log(f"    -> {'tersimpan' if ok else 'GAGAL simpan'} ke {TABEL} status={status}")
+    return nickname_ok if (ok and status == "SUCCESS") else None
 
 async def main():
-    jumlah = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-    if len(sys.argv) > 2:
-        # JUMLAH dari env workflow
-        pass
-    jumlah = int(os.getenv("JUMLAH", str(jumlah)))
+    jumlah = int(os.getenv("JUMLAH", "3"))
     workers = int(os.getenv("WORKERS", "10"))
-
+    runner_index = int(os.getenv("RUNNER_INDEX", "1"))
+    runner_total = int(os.getenv("RUNNER_TOTAL", "1"))
+    name_mode = os.getenv("NAME_MODE", "list").strip().lower()
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("[!] SUPABASE_URL / SUPABASE_SERVICE_KEY belum diset.")
         sys.exit(1)
-
-    log(f"[*] REGISTER+NICKNAME: {jumlah} bot -> tabel `{TABEL}` (paralel {workers} workers)")
+    all_names = []
+    if name_mode == "list":
+        all_names = load_custom_names()
+        # Partisi per runner (matrix 20): runner 1 ambil index 0,20,40...,
+        # runner 2 ambil 1,21,41..., dst. Jadi tidak ada nama ganda antar runner.
+        if runner_total > 1:
+            all_names = all_names[runner_index - 1::runner_total]
+        log(f"[*] NAME_MODE=list, {len(all_names)} nama untuk runner {runner_index}/{runner_total}")
+    else:
+        log(f"[*] NAME_MODE={name_mode}, pakai saran server")
+    log(f"[*] REGISTER+NICKNAME CEPAT: {jumlah} bot -> tabel `{TABEL}` (paralel {workers} workers)")
     t0 = time.time()
-
     global _exec_pool
+    from concurrent.futures import ThreadPoolExecutor
     sem = asyncio.Semaphore(workers)
-    # Executor eksplisit: default cuma 8 thread di runner 4-CPU
     _exec_pool = ThreadPoolExecutor(max_workers=workers)
     try:
         async def _run(i):
             async with sem:
-                return await proses_satu_bot(i, jumlah)
+                wanted = None
+                if name_mode == "list" and i - 1 < len(all_names):
+                    wanted = all_names[i - 1]
+                return await proses_satu_bot(i, jumlah, wanted)
         hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)])
     finally:
         _exec_pool.shutdown(wait=True)
-    # hasil berisi nickname (str dengan #) atau None
     dengan_hash = sum(1 for x in hasil if x and "#" in str(x))
-
     dt = time.time() - t0
     log(f"\n[HASIL] {dengan_hash}/{jumlah} bot dapat nama (#) "
         f"({dt:.1f}s total, {dt/max(jumlah,1):.1f}s/bot)")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
