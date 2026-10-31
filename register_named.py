@@ -980,6 +980,37 @@ async def proses_satu_bot(idx, total, wanted_name):
             log(f"    -> TCP sesi {_attempt+1} gagal (name={name_out!r} error={error_out!r}), retry sesi {_attempt+2}...")
             await asyncio.sleep(2 + random.random() * 2)
     nickname_ok = name_out if (name_out and not error_out and "#" in name_out) else None
+    # FALLBACK SARAN SERVER 2026-10-31 per Bartes: kalau nama dari list
+    # gagal (respon server kosong/diam setelah 4 sesi, ATAU ditolak
+    # eksplisit seperti profanity), JANGAN langsung buang bot ini.
+    # Coba lagi dengan nama saran dari server (wanted_name=None ->
+    # tcp_nickname akan dengar saran otomatis / GET eksplisit, lalu
+    # SET saran itu). Bot yang sukses via list tetap pakai nama list;
+    # bot yang gagal list akan tersimpan dengan nama saran server,
+    # jadi total sukses run 100 naik, bukan 66/100 lalu 34 bot hilang.
+    # Fallback ini pakai akun yang SAMA (email/device_id/jwt/alloc
+    # yang sama), jadi tidak perlu registrasi HTTP baru, dan saran
+    # tiap sesi bisa berbeda (server memberi saran baru tiap sesi),
+    # jadi untuk fallback JANGAN berhenti di error eksplisit satu
+    # sesi -- saran berikutnya bisa bersih. Maksimal 4 sesi fallback,
+    # sama seperti loop list, supaya waktu total per bot gagal
+    # maksimal ~2x loop list, dan hanya bot gagal yang membayar
+    # biaya ini (bot sukses list tidak kena fallback sama sekali).
+    if not nickname_ok and wanted_name is not None:
+        log(f"    -> FALLBACK: nama list {wanted_name!r} gagal "
+            f"(dapat: {name_out!r} error: {error_out!r}), "
+            f"coba minta nama dari server...")
+        for _fb in range(4):
+            fb_out, fb_err = await loop.run_in_executor(
+                exec_pool, tcp_nickname, user_jwt, alloc, device_id, None)
+            if fb_out and not fb_err and "#" in fb_out:
+                nickname_ok = fb_out
+                log(f"    -> nickname OK via FALLBACK saran server: {nickname_ok}")
+                break
+            log(f"    -> FALLBACK sesi {_fb+1} gagal "
+                f"(dapat: {fb_out!r} error: {fb_err!r})")
+            if _fb < 3:
+                await asyncio.sleep(2 + random.random() * 2)
     status = "NICK_FAIL"
     linked = False
     if nickname_ok:
