@@ -892,8 +892,8 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 TABEL = "named_bots"
 
-async def save_bot(session, email, password, device_id, nickname, status):
-    endpoint = f"{SUPABASE_URL}/rest/v1/{TABEL}"
+async def save_bot(session, email, password, device_id, nickname, status, tabel=None):
+    endpoint = f"{SUPABASE_URL}/rest/v1/{tabel or TABEL}"
     headers = {"apikey": SUPABASE_KEY,
                "Authorization": f"Bearer {SUPABASE_KEY}",
                "Content-Type": "application/json",
@@ -985,6 +985,10 @@ async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
         log("    -> GAGAL registrasi")
         return None
     email, password, device_id, user_jwt, alloc = reg
+    # PENYELAMAT TANPA NAMA: lacak akun terakhir yang dicoba, supaya
+    # kalau semua nama gagal, akun terakhir itu masih bisa di-link
+    # email-nya dan disimpan ke accounts sebagai bot tanpa nama.
+    last_email, last_password, last_device_id, last_user_jwt = email, password, device_id, user_jwt
     log(f"    -> {email[:4]}*** terdaftar, TCP nickname+outfit...")
     await asyncio.sleep(random.random() * 2)
     nickname_ok, name_out, error_out = await try_nickname(
@@ -1017,6 +1021,7 @@ async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
             log("    -> FALLBACK AKUN BARU: GAGAL registrasi akun baru")
         else:
             email2, password2, device_id2, user_jwt2, alloc2 = reg2
+            last_email, last_password, last_device_id, last_user_jwt = email2, password2, device_id2, user_jwt2
             log(f"    -> FALLBACK AKUN BARU: {email2[:4]}*** terdaftar, "
                 f"coba nama list yang sama lagi...")
             await asyncio.sleep(random.random() * 2)
@@ -1076,6 +1081,7 @@ async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
                 log("    -> PENGAMAN NAMA BERBEDA: GAGAL registrasi akun baru, coba nama berikutnya...")
                 continue
             email_c, password_c, device_id_c, user_jwt_c, alloc_c = reg_c
+            last_email, last_password, last_device_id, last_user_jwt = email_c, password_c, device_id_c, user_jwt_c
             log(f"    -> PENGAMAN NAMA BERBEDA: {email_c[:4]}*** terdaftar, coba SET {_cand!r}...")
             await asyncio.sleep(random.random() * 2)
             nickname_ok, name_out, error_out = await try_nickname(
@@ -1100,10 +1106,42 @@ async def proses_satu_bot(idx, total, wanted_name, candidate_names=None):
         log(f"    -> {'tersimpan' if ok else 'GAGAL simpan'} ke {TABEL} status={status}")
         return nickname_ok if ok else None
     else:
-        # 2026-10-31 per Bartes: HANYA SUCCESS yang masuk Supabase.
-        # Gagal tidak disimpan sama sekali, supaya stok di DB = stok
-        # yang benar-benar bisa dipakai follow, tidak manipulatif.
-        log(f"    -> TIDAK disimpan ke {TABEL} (status={status}, hanya SUCCESS yang masuk DB)")
+        # PENYELAMAT TANPA NAMA 2026-10-31 per Bartes: kalau nama
+        # gagal total, jangan buang akunnya begitu saja. Di alur
+        # produksi sekarang, email BELUM di-link saat nama gagal
+        # (email di-link hanya setelah nama sukses, sesuai alur
+        # game), jadi "email yang berhasil register" itu belum ada
+        # saat gagal — yang ada baru akun TAMU. Supaya akun itu
+        # tidak terbuang, di sini kita LINK EMAIL akun terakhir
+        # yang dicoba (biaya ~1 detik, link email terbukti 5/5 di
+        # tes email-dulu, dan link setelah TCP gagal belum terbukti
+        # gagal — kalau link ini gagal, bot tetap dibuang seperti
+        # dulu). Kalau link berhasil, akun itu SUDAH menjadi akun
+        # email yang valid, dan bisa dipakai follow/like seperti
+        # bot tanpa nama lainnya, jadi simpan ke tabel `accounts`
+        # (bukan `named_bots`) dengan nickname NULL, status SUCCESS.
+        # Ini TIDAK manipulatif untuk stok named: named_bots TIDAK
+        # bertambah untuk bot ini (proses ini tetap return None,
+        # jadi [HASIL] named tidak menghitungnya), yang bertambah
+        # hanya accounts, dan bot itu memang benar-benar bisa
+        # dipakai follow/like via email login, seperti 63373 akun
+        # tanpa nama lainnya yang nickname-nya NULL. Hanya SATU
+        # akun per slot gagal yang diselamatkan (akun terakhir),
+        # bukan semua 7 akun yang dicoba, supaya accounts tidak
+        # dibanjiri akun gagal yang sama.
+        log(f"    -> PENYELAMAT TANPA NAMA: nama gagal total, coba link email akun terakhir {last_email[:4]}*** lalu simpan ke accounts...")
+        _linked_unnamed = await http_link_email(last_email, last_password, last_device_id, last_user_jwt)
+        log(f"    -> PENYELAMAT TANPA NAMA: link email akun terakhir: {_linked_unnamed}")
+        if _linked_unnamed:
+            async with AsyncSession(impersonate="chrome110", verify=False) as session:
+                _ok_unnamed = await save_bot(session, last_email, last_password, last_device_id, None, "SUCCESS", tabel="accounts")
+            log(f"    -> PENYELAMAT TANPA NAMA: {'tersimpan' if _ok_unnamed else 'GAGAL simpan'} ke accounts sebagai bot tanpa nama (nickname NULL, bukan named_bots)")
+        else:
+            log(f"    -> PENYELAMAT TANPA NAMA: link email gagal, akun dibuang seperti dulu")
+        # 2026-10-31 per Bartes: HANYA SUCCESS yang masuk named_bots.
+        # Gagal nama tidak disimpan ke named_bots sama sekali, supaya
+        # stok named di DB = stok yang benar-benar bernama.
+        log(f"    -> TIDAK disimpan ke {TABEL} (status={status}, hanya SUCCESS yang masuk DB named)")
         return None
 
 async def main():
