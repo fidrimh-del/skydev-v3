@@ -1007,11 +1007,13 @@ async def main():
     all_names = []
     if name_mode == "list":
         all_names = load_custom_names()
-        used = await load_used_bases()
-        if used:
-            before = len(all_names)
-            all_names = [n for n in all_names if n not in used]
-            log(f"[*] List nama: {before} -> {len(all_names)} setelah buang {len(used)} nama yang sudah ada di {TABEL}")
+        # 2026-10-31 per Bartes: duplikat base DIIZINKAN server, kode #
+        # selalu berbeda (bukti DB: プロプレイヤー#426/#404,
+        # StormKing#929/#610, XxxKingxxX#941/#767, dst., tidak ada
+        # nickname lengkap yang sama persis). Jadi JANGAN buang nama
+        # yang sudah SUCCESS — kalau dibuang, list 92 nama tidak
+        # cukup untuk 100 percobaan dan sisanya jatuh ke saran server.
+        # Dengan duplikat diizinkan, list 187 nama cukup untuk 100+.
         # Partisi per runner (matrix 20): runner 1 ambil index 0,20,40...,
         # runner 2 ambil 1,21,41..., dst. Jadi tidak ada nama ganda antar runner.
         if runner_total > 1:
@@ -1029,8 +1031,10 @@ async def main():
         async def _run(i):
             async with sem:
                 wanted = None
-                if name_mode == "list" and i - 1 < len(all_names):
-                    wanted = all_names[i - 1]
+                if name_mode == "list" and all_names:
+                    # Siklis: kalau percobaan melebihi panjang list/partisi,
+                    # ulang dari awal partisi, bukan jatuh ke saran server.
+                    wanted = all_names[(i - 1) % len(all_names)]
                 return await proses_satu_bot(i, jumlah, wanted)
         hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)])
     finally:
