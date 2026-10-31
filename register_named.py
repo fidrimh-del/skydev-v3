@@ -1026,7 +1026,25 @@ async def main():
         # runner 2 ambil 1,21,41..., dst. Jadi tidak ada nama ganda antar runner.
         if runner_total > 1:
             all_names = all_names[runner_index - 1::runner_total]
-        log(f"[*] NAME_MODE=list, {len(all_names)} nama untuk runner {runner_index}/{runner_total}")
+        # ROTASI BLOK PER RUN (matrix saja, single tetap offset 0):
+        # Tanpa rotasi, run 100 selalu pakai 100 nama pertama di list
+        # (index 0-99, karena partisi pertama 5 per runner menutupi
+        # persis index itu), jadi run berikutnya mengulang nama yang
+        # sama. Dengan rotasi, setiap run matrix pakai blok 100 nama
+        # berikutnya: offset = ((run_number-1)*5) % len(partisi),
+        # jadi blok list = offset*20 .. offset*20+99, dan 20 run
+        # berturut-turut tidak mengulang blok yang sama (list 2000
+        # nama = 20 blok x 100 nama). GITHUB_RUN_NUMBER otomatis
+        # ada di runner GitHub Actions, 0 kalau dijalankan lokal.
+        name_offset = 0
+        if runner_total > 1 and all_names:
+            try:
+                _run_no = int(os.getenv("GITHUB_RUN_NUMBER", "0") or 0)
+            except ValueError:
+                _run_no = 0
+            if _run_no > 0:
+                name_offset = ((_run_no - 1) * 5) % len(all_names)
+        log(f"[*] NAME_MODE=list, {len(all_names)} nama untuk runner {runner_index}/{runner_total}, rotasi offset={name_offset}")
     else:
         log(f"[*] NAME_MODE={name_mode}, pakai saran server")
     log(f"[*] REGISTER+NICKNAME CEPAT: {jumlah} bot -> tabel `{TABEL}` (paralel {workers} workers)")
@@ -1042,7 +1060,7 @@ async def main():
                 if name_mode == "list" and all_names:
                     # Siklis: kalau percobaan melebihi panjang list/partisi,
                     # ulang dari awal partisi, bukan jatuh ke saran server.
-                    wanted = all_names[(i - 1) % len(all_names)]
+                    wanted = all_names[(i - 1 + name_offset) % len(all_names)]
                 return await proses_satu_bot(i, jumlah, wanted)
         hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)])
     finally:
