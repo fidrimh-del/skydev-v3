@@ -11,6 +11,10 @@ on:
         description: 'Paralel workers per runner'
         required: false
         default: '20'
+      name_mode:
+        description: 'Sumber nama: list (custom_names_list.txt) atau suggestion (server)'
+        required: false
+        default: 'list'
 
 jobs:
   register:
@@ -45,4 +49,8 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           JUMLAH: ${{ steps.hitung.outputs.jatah }}
           WORKERS: ${{ inputs.workers }}
+          NAME_MODE: ${{ inputs.name_mode }}
+          CUSTOM_NAMES_FILE: custom_names_list.txt
+          RUNNER_INDEX: ${{ matrix.runner }}
+          RUNNER_TOTAL: '20'
         run: python register_named.py
