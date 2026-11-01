@@ -343,24 +343,34 @@ def main():
             return 1
         target_uuid = hit["uuid"]
 
-    # 3. Histori rumah massal (tanpa sesi) — dibaca sekali di awal;
-    #    baris yang ditulis selama job menyangkut bot yang sudah
-    #    tried. None = tabel belum ada -> fallback IsThere per bot.
-    sudah = history_set_house(target_uuid)
-    if sudah is None:
-        print("[*] Histori rumah tidak dipakai (fallback IsThere "
-              "per bot).")
+    # 3. RPC BARU (2026-11-01): bot fresh SUDAH difilter di
+    #    Supabase lewat RPC get_fresh_house_like_bots, yang memfilter
+    #    house_like_history langsung di DB — BUKAN follow_history
+    #    seperti RPC lama get_fresh_bots.
+    #    Dulu: history_set baca penuh histori + paging mengambil
+    #    ulang bot like lama halaman demi halaman, jadi order
+    #    100 like setelah 10.000 like lama harus melewati 10.100
+    #    bot. Sekarang: ambil batch fresh dari RPC baru, seperti
+    #    follow, tanpa history_set lokal dan tanpa paging lama.
+    #    history_set() tetap ada di file untuk fallback di bawah,
+    #    tapi TIDAK dipakai di jalur baru ini.
+    #    Fallback: bila RPC baru mengembalikan kosong di ronde
+    #    pertama padahal RPC lama masih ada bot, job beralih ke
+    #    jalur lama (history_set + paging) supaya tidak gagal
+    #    total hanya karena RPC baru hilang.
+    pakai_rpc_baru = True
+    sudah = set()
+    print("[*] RPC fresh baru dipakai: filter like sudah di "
+          "Supabase, history_set lokal dilewati.")
 
-    # 4. Ronde jalan paralel (maks 50) dengan PAGING: tiap ronde
-    #    mengambil SATU halaman (5000 bot) berikutnya dari urutan RPC.
-    #    Bot yang sudah terpakai untuk target ini menumpuk di urutan
-    #    depan — paging melompati mereka halaman demi halaman sampai
-    #    ke bot fresh di kedalaman pool (puluhan ribu). Tidak ada lagi
-    #    plafon 5000/batas 4 ronde: loop berhenti bila target terpenuhi
-    #    ATAU halaman kosong (pool benar-benar habis). Bot yang sudah
-    #    tried dan yang ada di histori tidak ditugaskan lagi. Tugas
-    #    yang antre dan mendapati target sudah terpenuhi lewati sendiri
-    #    (murah, tanpa sesi).
+    # 4. Ronde jalan paralel (maks 50) dengan AMBIL BATCH FRESH:
+    #    limit awal = jumlah*2 (buffer untuk bot gagal), minimal
+    #    200. Batch berikutnya ambil dengan limit yang lebih
+    #    besar, lalu fresh_bots membuang bot yang sudah tried,
+    #    sehingga hanya bot baru yang jalan. Berhenti bila target
+    #    terpenuhi ATAU RPC mengembalikan kurang dari limit yang
+    #    diminta (pool fresh benar-benar habis). Logika per bot
+    #    (login, Create, IsThere, JOIN rumah, retry) TIDAK diubah.
     HALAMAN = 5000
     state = {"lock": threading.Lock(), "jumlah": jumlah,
              "sent": 0, "skipped": 0,
@@ -369,33 +379,83 @@ def main():
     nomor = 0
     ronde = 0
     offset = 0
+    ambil_limit = max(jumlah * 2, 200)
     while True:
         if state["sent"] >= jumlah:
             break
         ronde += 1
-        pool = P.get_bots_page(target_uuid, limit=HALAMAN, offset=offset)
-        if not pool:
-            print(f"[*] RONDE {ronde}: pool habis pada offset {offset} — "
-                  f"tidak ada bot tersisa untuk target ini.")
-            break
-        offset += HALAMAN
-        if sudah is not None:
-            baru_histori = {b["email"] for b in pool
-                            if b["email"] not in state["tried"]
-                            and b["email"] in sudah}
-            state["history_seen"] |= baru_histori
-        tugas = fresh_bots(pool, state["tried"], sudah)
-        if not tugas:
-            print(f"[*] RONDE {ronde}: {len(pool)} bot di halaman ini "
-                  f"semua sudah tried/berhistori — lanjut halaman berikut.")
-            continue
-        print(f"[*] RONDE {ronde}: {len(tugas)} bot fresh jalan "
-              f"(paralel {max_paralel}).")
-        nomor = jalankan_tugas(tugas, target_uuid, state, max_paralel,
-                               nomor)
-        print(f"[*] RONDE {ronde} selesai: terkirim={state['sent']} "
-              f"dilewati_sesi={state['skipped']} "
-              f"gagal={len(state['failed_map'])}")
+        if pakai_rpc_baru:
+            pool = H.get_house_bots(target_uuid, limit=ambil_limit)
+            if not pool:
+                if ronde == 1:
+                    cek_lama = P.get_bots(target_uuid, limit=10)
+                    if cek_lama:
+                        print("[!] RPC baru kosong tapi RPC lama ada "
+                              "bot -> fallback ke jalur lama "
+                              "(history_set + paging).")
+                        pakai_rpc_baru = False
+                        sudah = history_set_house(target_uuid)
+                        if sudah is None:
+                            print("[*] Histori tidak dipakai "
+                                  "(fallback IsThere per bot).")
+                            sudah = None
+                        offset = 0
+                        continue
+                print(f"[*] RONDE {ronde}: tidak ada bot fresh "
+                      "dari RPC baru — pool habis.")
+                break
+            tugas = fresh_bots(pool, state["tried"], None)
+            if not tugas:
+                if len(pool) < ambil_limit:
+                    print(f"[*] RONDE {ronde}: semua bot di batch "
+                          "ini sudah tried dan RPC tidak punya "
+                          "lebih — pool habis.")
+                    break
+                ambil_limit += max(jumlah * 2, 200)
+                continue
+            print(f"[*] RONDE {ronde}: {len(tugas)} bot fresh "
+                  f"jalan (paralel {max_paralel}, "
+                  f"ambil_limit {ambil_limit}).")
+            nomor = jalankan_tugas(tugas, target_uuid, state,
+                                   max_paralel, nomor)
+            print(f"[*] RONDE {ronde} selesai: "
+                  f"terkirim={state['sent']} "
+                  f"dilewati_sesi={state['skipped']} "
+                  f"gagal={len(state['failed_map'])}")
+            if state["sent"] >= jumlah:
+                break
+            if len(pool) < ambil_limit:
+                print("[*] RPC mengembalikan kurang dari limit — "
+                      "pool fresh habis.")
+                break
+            ambil_limit += max(jumlah * 2, 200)
+        else:
+            pool = P.get_bots_page(target_uuid, limit=HALAMAN,
+                                   offset=offset)
+            if not pool:
+                print(f"[*] RONDE {ronde}: pool habis pada offset "
+                      f"{offset} — tidak ada bot tersisa.")
+                break
+            offset += HALAMAN
+            if sudah is not None:
+                baru_histori = {b["email"] for b in pool
+                                if b["email"] not in state["tried"]
+                                and b["email"] in sudah}
+                state["history_seen"] |= baru_histori
+            tugas = fresh_bots(pool, state["tried"], sudah)
+            if not tugas:
+                print(f"[*] RONDE {ronde}: {len(pool)} bot di "
+                      "halaman ini semua sudah tried/berhistori — "
+                      "lanjut halaman berikut.")
+                continue
+            print(f"[*] RONDE {ronde} (fallback): {len(tugas)} "
+                  f"bot fresh jalan (paralel {max_paralel}).")
+            nomor = jalankan_tugas(tugas, target_uuid, state,
+                                   max_paralel, nomor)
+            print(f"[*] RONDE {ronde} selesai: "
+                  f"terkirim={state['sent']} "
+                  f"dilewati_sesi={state['skipped']} "
+                  f"gagal={len(state['failed_map'])}")
 
     # 5. Ronde retry terakhir: bila masih kurang, coba ulang sekali
     #    HANYA bot yang sempat menjawab IsThere (gagal verifikasi /
