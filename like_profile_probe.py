@@ -237,6 +237,50 @@ def get_bots(target_uuid, limit=8):
     return bots
 
 
+def get_profile_bots(target_uuid, limit=8):
+    """Bot FRESH untuk like PROFIL, langsung dari Supabase panel
+    lewat RPC BARU get_fresh_profile_like_bots /
+    get_fresh_named_profile_like_bots (2026-11-01).
+
+    BEDA dengan get_bots() di atas: get_bots() memakai RPC lama
+    get_fresh_bots yang HANYA memfilter follow_history, sehingga
+    bot yang sudah like profil tapi belum follow tetap dikembalikan
+    dan harus difilter manual lewat history_set + paging di cloud.
+    RPC baru ini memfilter profile_like_history langsung di DB,
+    jadi daftar yang dikembalikan sudah benar-benar fresh untuk
+    target profil ini, persis seperti follow yang memfilter
+    follow_history di RPC-nya. Kembalikan [] bila RPC gagal,
+    supaya pemanggil bisa fallback ke jalur lama."""
+    url, key = _supabase()
+    if not url or not key:
+        print("[-] SUPABASE_URL / SUPABASE_SERVICE_KEY tidak ada di env.")
+        return []
+    _rpc = ("get_fresh_named_profile_like_bots"
+            if os.getenv("BOT_TYPE", "accounts") == "named_bots"
+            else "get_fresh_profile_like_bots")
+    req = urllib.request.Request(
+        url + f"/rest/v1/rpc/{_rpc}",
+        data=json.dumps({"p_target_uuid": target_uuid,
+                         "p_limit": limit}).encode("utf-8"),
+        headers={"apikey": key, "Authorization": "Bearer " + key,
+                 "Content-Type": "application/json"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            rows = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print(f"[-] {_rpc} HTTP {e.code}")
+        return []
+    except Exception as e:
+        print(f"[-] {_rpc} gagal: {e}")
+        return []
+    bots = [b for b in rows
+            if b.get("email") and b.get("password") and b.get("device_id")]
+    print(f"[*] {len(bots)} bot fresh profil didapat dari Supabase "
+          f"(RPC {_rpc}, limit {limit}).")
+    return bots
+
+
 def get_bots_page(target_uuid, limit=5000, offset=0):
     """Satu halaman bot dari urutan RPC get_fresh_bots.
 
