@@ -30,19 +30,120 @@ on:
         required: false
         default: "accounts"
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.hitung.outputs.matrix }}
+      runner_total: ${{ steps.hitung.outputs.runner_total }}
+      workers: ${{ steps.hitung.outputs.workers }}
+    steps:
+      - id: hitung
+        env:
+          JUMLAH: ${{ inputs.jumlah }}
+          MAX_PARALEL: ${{ inputs.max_paralel }}
+        run: |
+          python3 - << 'PY'
+          import json, os
+          try:
+              jumlah = int(os.environ.get("JUMLAH", "0") or "0")
+          except ValueError:
+              jumlah = 0
+          try:
+              maks = int(os.environ.get("MAX_PARALEL", "50") or "50")
+          except ValueError:
+              maks = 50
+          # Mode otomatis: <1000 = 1 runner, 1000-4999 = 5 runner,
+          # >=5000 = 20 runner dengan worker per runner dibatasi 25.
+          if jumlah < 1000:
+              total, cap = 1, 50
+          elif jumlah < 5000:
+              total, cap = 5, 50
+          else:
+              total, cap = 20, 25
+          workers = max(1, min(maks, cap))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write("matrix=" + json.dumps(list(range(total))) + "\n")
+              f.write("runner_total=" + str(total) + "\n")
+              f.write("workers=" + str(workers) + "\n")
+          print("jumlah=" + str(jumlah) + " runner_total=" + str(total) + " workers=" + str(workers))
+          PY
   like_profil:
+    needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner_index: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install curl_cffi urllib3
-      - run: python -u like_profile_cloud.py "${{ inputs.target }}" "${{ inputs.jumlah }}" "${{ inputs.max_paralel }}"
+      - run: python -u like_profile_cloud.py "${{ inputs.target }}" "${{ inputs.jumlah }}" "${{ needs.setup.outputs.workers }}"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           BOT_TYPE: ${{ inputs.bot_type }}
           FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
           FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          RUNNER_INDEX: ${{ matrix.runner_index }}
+          RUNNER_TOTAL: ${{ needs.setup.outputs.runner_total }}
+          LIKE_RESULT_FILE: like_result_${{ matrix.runner_index }}.json
+      - name: Upload hasil runner
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: like-profil-result-${{ matrix.runner_index }}
+          path: like_result_${{ matrix.runner_index }}.json
+          if-no-files-found: warn
+  agregasi:
+    needs: like_profil
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: like-profil-result-*
+          path: results
+          merge-multiple: true
+      - name: Jumlahkan hasil semua runner
+        env:
+          JUMLAH: ${{ inputs.jumlah }}
+        run: |
+          python3 - << 'PY'
+          import glob, json, os, sys
+          total_diminta = 0
+          total_terkirim = 0
+          per_runner = []
+          for path in sorted(glob.glob("results/like_result_*.json")):
+              try:
+                  with open(path, encoding="utf-8") as f:
+                      d = json.load(f)
+              except Exception as e:
+                  print("[!] " + path + " tidak bisa dibaca: " + str(e))
+                  continue
+              per_runner.append(d)
+              total_diminta += int(d.get("diminta_runner", 0) or 0)
+              total_terkirim += int(d.get("terkirim", 0) or 0)
+          try:
+              jumlah = int(os.environ.get("JUMLAH", "0") or "0")
+          except ValueError:
+              jumlah = 0
+          print("HASIL AGREGASI LIKE PROFIL: diminta_total_input=" + str(jumlah) +
+                " diminta_sum_runner=" + str(total_diminta) +
+                " terkirim_total=" + str(total_terkirim) +
+                " runner_tercatat=" + str(len(per_runner)))
+          for d in per_runner:
+              print("  runner " + str(d.get("runner_index")) +
+                    " terkirim " + str(d.get("terkirim")) + "/" + str(d.get("diminta_runner")))
+          if not per_runner:
+              print("[!] Tidak ada hasil runner yang terunduh - GAGAL")
+              sys.exit(1)
+          if total_terkirim < jumlah:
+              print("[!] Kurang " + str(jumlah - total_terkirim) + " dari target total")
+              sys.exit(1)
+          print("[+] Target total terpenuhi")
+          PY
