@@ -402,7 +402,7 @@ def random_password():
             + "".join(random.choices(string.digits, k=random.randint(3, 5))))
 
 
-async def http_register():
+async def _http_register_impl():
     device_id = random_device_id()
     # V9: kalau TEST_EMAIL/TEST_PASSWORD diisi dari workflow (oleh
     # pemilik akun tes sendiri), pakai itu, bukan acak. Kredensial
@@ -488,6 +488,21 @@ async def http_register():
         log(f"[+] Registrasi TAMU selesai untuk {email[:4]}*** "
             f"(email belum di-link, sesuai alur game)")
         return email, password, device_id, user_jwt, r6.json()
+
+
+async def http_register():
+    """Wrapper anti-crash 2026-11-01 (run 1000, 41268435786):
+    Satu bot yang kena curl timeout 30 detik di anonymous sign-up
+    sebelumnya melempar exception sampai ke asyncio.gather dan
+    membunuh satu runner utuh, padahal bot lain di runner itu
+    sudah berhasil tersimpan (445/1000). Dengan wrapper ini,
+    timeout / exception HTTP apapun di registrasi hanya membuat
+    bot itu gagal per bot (return None), bukan membunuh runner."""
+    try:
+        return await _http_register_impl()
+    except Exception as e:
+        log(f"[!] http_register exception ({type(e).__name__}: {str(e)[:200]}) -> bot ini gagal, runner lanjut.")
+        return None
 
 
 async def http_link_email(email, password, device_id, guest_jwt):
@@ -1213,11 +1228,15 @@ async def main():
                         _cand = all_names[(name_offset + jumlah + _k) % len(all_names)]
                         if _cand != wanted and _cand not in candidate_names:
                             candidate_names.append(_cand)
-                return await proses_satu_bot(i, jumlah, wanted, candidate_names)
-        hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)])
+                try:
+                    return await proses_satu_bot(i, jumlah, wanted, candidate_names)
+                except Exception as e:
+                    log(f"[!] Bot {i} exception ({type(e).__name__}: {str(e)[:200]}) -> bot ini gagal, runner lanjut.")
+                    return None
+        hasil = await asyncio.gather(*[_run(i) for i in range(1, jumlah + 1)], return_exceptions=True)
     finally:
         _exec_pool.shutdown(wait=True)
-    dengan_hash = sum(1 for x in hasil if x and "#" in str(x))
+    dengan_hash = sum(1 for x in hasil if x and not isinstance(x, Exception) and "#" in str(x))
     dt = time.time() - t0
     log(f"\n[HASIL] {dengan_hash}/{jumlah} bot dapat nama (#) "
         f"({dt:.1f}s total, {dt/max(jumlah,1):.1f}s/bot)")
