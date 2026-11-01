@@ -41,6 +41,16 @@ on:
   repository_dispatch:
     types: [new-order]
 
+# ANTREAN: satu run poller dalam satu waktu, run baru MENUNGGU,
+# bukan membatalkan run lama dan bukan jalan paralel.
+# Jadi 3 order dalam 1 menit tetap semua diproses: run pertama
+# memproses yang sudah pending, run antrean berikutnya memproses
+# sisanya (atau langsung selesai kalau sudah tidak ada pending),
+# tanpa lookup ganda dan tanpa Telegram ganda untuk order yang sama.
+concurrency:
+  group: lookup-poll
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
