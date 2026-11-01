@@ -127,6 +127,47 @@ def history_put_house(bot_email, target_uuid, source="probe"):
         print(f"[!] history_put_house gagal ({e}) (like tetap sah).")
 
 
+def get_house_bots(target_uuid, limit=8):
+    """Bot FRESH untuk like RUMAH, langsung dari Supabase panel
+    lewat RPC BARU get_fresh_house_like_bots /
+    get_fresh_named_house_like_bots (2026-11-01).
+
+    BEDA dengan P.get_bots() yang memakai RPC lama get_fresh_bots
+    (hanya memfilter follow_history): RPC baru ini memfilter
+    house_like_history langsung di DB, jadi daftar yang
+    dikembalikan sudah benar-benar fresh untuk target rumah ini.
+    Kembalikan [] bila RPC gagal, supaya pemanggil bisa fallback
+    ke jalur lama."""
+    url, key = P._supabase()
+    if not url or not key:
+        print("[-] SUPABASE_URL / SUPABASE_SERVICE_KEY tidak ada di env.")
+        return []
+    _rpc = ("get_fresh_named_house_like_bots"
+            if os.getenv("BOT_TYPE", "accounts") == "named_bots"
+            else "get_fresh_house_like_bots")
+    req = urllib.request.Request(
+        url + f"/rest/v1/rpc/{_rpc}",
+        data=json.dumps({"p_target_uuid": target_uuid,
+                         "p_limit": limit}).encode("utf-8"),
+        headers={"apikey": key, "Authorization": "Bearer " + key,
+                 "Content-Type": "application/json"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            rows = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print(f"[-] {_rpc} HTTP {e.code}")
+        return []
+    except Exception as e:
+        print(f"[-] {_rpc} gagal: {e}")
+        return []
+    bots = [b for b in rows
+            if b.get("email") and b.get("password") and b.get("device_id")]
+    print(f"[*] {len(bots)} bot fresh rumah didapat dari Supabase "
+          f"(RPC {_rpc}, limit {limit}).")
+    return bots
+
+
 async def like_house_once(session, bot, target_uuid):
     """Satu percobaan penuh (tanpa cek histori — pemanggil yang mengecek
     histori dulu). POLA LIKE-POST (tanpa IsThere-sebelum — bot non-histori
