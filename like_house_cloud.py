@@ -85,7 +85,6 @@ CATATAN JUJUR TENTANG WAKTU:
 
 import asyncio
 import json
-import hashlib
 import os
 import random
 import re
@@ -118,61 +117,6 @@ def clamp_paralel(n, default=50):
         return default
     return max(1, min(50, v))
 
-# ---------------------------------------------------------------- mode otomatis
-# Mode otomatis (runner logic, BUKAN logika per bot):
-#   jumlah_total < 1000  -> 1 runner, perilaku persis seperti dulu
-#   1000 <= jumlah_total < 5000 -> 5 runner
-#   jumlah_total >= 5000 -> 20 runner, worker per runner dibatasi 25
-# Partisi bot memakai hash email, deterministik, tidak bergantung pada
-# urutan RPC, sehingga tidak ada bot yang dipakai dua runner.
-# Logika per bot (login, Create, IsThere, JOIN rumah, retry) TIDAK diubah.
-def runner_info():
-    try:
-        total = int(os.getenv("RUNNER_TOTAL", "1") or "1")
-    except ValueError:
-        total = 1
-    if total < 1:
-        total = 1
-    try:
-        index = int(os.getenv("RUNNER_INDEX", "0") or "0")
-    except ValueError:
-        index = 0
-    if index < 0 or index >= total:
-        index = 0
-    return index, total
-
-
-def sub_target(jumlah_total, index, total):
-    """Bagi jumlah_total ke runner_total bagian, selisih sisa ke
-    runner pertama. Jumlah semua sub_target = jumlah_total persis."""
-    if total <= 1:
-        return jumlah_total
-    base = jumlah_total // total
-    rem = jumlah_total % total
-    return base + (1 if index < rem else 0)
-
-
-def in_slice(email, index, total):
-    if total <= 1:
-        return True
-    if not email:
-        return False
-    h = int.from_bytes(
-        hashlib.sha256(email.strip().lower().encode("utf-8")).digest()[:8],
-        "big")
-    return (h % total) == index
-
-
-def write_result(path, data):
-    if not path:
-        return
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[!] Gagal menulis hasil {path}: {e}")
-
-
 
 def parse_args(argv):
     """argv[1] = target, argv[2] = jumlah, argv[3] = max_paralel (opsional).
@@ -195,19 +139,15 @@ def decide_exit(sent, jumlah):
     return 0 if sent >= jumlah else 1
 
 
-def fresh_bots(pool, tried, history, runner_index=0, runner_total=1):
-    """Bot yang belum pernah ditugaskan, belum ada di histori, DAN
-    masuk slice runner ini (hash email % runner_total == runner_index).
-    history=None -> filter histori dilewati (fallback IsThere).
-    runner_total=1 -> semua bot lolos (perilaku lama)."""
+def fresh_bots(pool, tried, history):
+    """Bot yang belum pernah ditugaskan dan belum ada di histori.
+    history=None -> filter histori dilewati (fallback IsThere)."""
     out = []
     for b in pool or []:
         email = b.get("email")
         if not email or email in tried:
             continue
         if history is not None and email in history:
-            continue
-        if not in_slice(email, runner_index, runner_total):
             continue
         out.append(b)
     return out
@@ -374,12 +314,7 @@ def main():
         print("  TARGET = UUID pemilik rumah atau Nama#Kode; "
               "JUMLAH >= 1; MAX_PARALEL dijepit 1..50 (default 50).")
         return 1
-    target_in, jumlah_total, max_paralel = parsed
-    runner_index, runner_total = runner_info()
-    jumlah = sub_target(jumlah_total, runner_index, runner_total)
-    result_path = os.getenv("LIKE_RESULT_FILE", "")
-    mode_label = ("biasa (1 runner)" if runner_total <= 1 else
-                  f"cepat (runner {runner_index + 1}/{runner_total})")
+    target_in, jumlah, max_paralel = parsed
     # Versi game/protokol dari panel (tabel app_settings); fallback
     # bawaan bila tak tersedia — job tetap jalan.
     L.apply_panel_versions()
@@ -387,18 +322,13 @@ def main():
     # env LIKE_VERBOSE=1).
     L.QUIET = True
     t0 = time.time()
-    print(f"[*] Like rumah: target={target_in} jumlah_total={jumlah_total} "
-          f"sub_target_runner={jumlah} mode={mode_label} "
+    print(f"[*] Like rumah: target={target_in} jumlah={jumlah} "
           f"paralel_maks={max_paralel}")
 
     # 1. Daftar bot awal (untuk resolusi bila perlu).
     bots = P.get_bots(target_in, limit=10)
     if not bots:
         print("[!] Tidak ada bot — berhenti.")
-        write_result(result_path, {"target": target_in,
-            "runner_index": runner_index, "runner_total": runner_total,
-            "diminta_total": jumlah_total, "diminta_runner": jumlah,
-            "terkirim": 0, "gagal": 0})
         return 1
 
     # 2. Resolusi Nama#Kode -> UUID (lewati bila input sudah UUID).
@@ -454,8 +384,7 @@ def main():
                             if b["email"] not in state["tried"]
                             and b["email"] in sudah}
             state["history_seen"] |= baru_histori
-        tugas = fresh_bots(pool, state["tried"], sudah,
-                             runner_index, runner_total)
+        tugas = fresh_bots(pool, state["tried"], sudah)
         if not tugas:
             print(f"[*] RONDE {ronde}: {len(pool)} bot di halaman ini "
                   f"semua sudah tried/berhistori — lanjut halaman berikut.")
@@ -489,7 +418,7 @@ def main():
     sent = state["sent"]
     print("=" * 48)
     print(f"HASIL LIKE RUMAH: target {target_uuid}")
-    print(f"  Diminta runner: {jumlah} dari total {jumlah_total} | Terkirim: {sent} | "
+    print(f"  Diminta: {jumlah} | Terkirim: {sent} | "
           f"Dilewati histori: {len(state['history_seen'])} | "
           f"Dilewati sesi (sudah like rumah): {state['skipped']} | "
           f"Gagal: {len(state['failed_map'])}")
@@ -498,22 +427,6 @@ def main():
     if sent < jumlah:
         print(f"[!] Kurang {jumlah - sent} like dari target "
               "(stok bot fresh habis / gagal berulang — cek log).")
-    write_result(result_path, {
-        "target": target_uuid, "runner_index": runner_index,
-        "runner_total": runner_total, "diminta_total": jumlah_total,
-        "diminta_runner": jumlah, "terkirim": sent,
-        "gagal": len(state["failed_map"]),
-        "dilewati_histori": len(state["history_seen"]),
-        "dilewati_sesi": state["skipped"]})
-    if runner_total > 1:
-        # Mode cepat: exit code per runner TIDAK menentukan hasil akhir.
-        # Job agregasi yang menjumlahkan semua runner dan gagal bila
-        # total < diminta_total. Per runner selalu 0 agar satu runner
-        # yang kehabisan slice tidak membatalkan agregasi.
-        print(f"[*] Mode cepat: runner {runner_index + 1}/{runner_total} "
-              f"terkirim {sent}/{jumlah} (total {jumlah_total}) — "
-              "hasil akhir ditentukan job agregasi.")
-        return 0
     return decide_exit(sent, jumlah)
 
 
