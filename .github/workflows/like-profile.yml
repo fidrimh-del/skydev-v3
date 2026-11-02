@@ -24,7 +24,7 @@ on:
       max_paralel:
         description: "Worker bersamaan (maks 50)"
         required: false
-        default: "50"
+        default: "20"
       bot_type:
         description: "Tipe bot: accounts atau named_bots"
         required: false
