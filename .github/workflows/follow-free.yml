@@ -1,0 +1,52 @@
+# Follow gratis 20 — workflow BARU, khusus klaim Free Followers.
+# BUKAN follow_bot.yml (script massal lama): workflow ini menjalankan
+# follow_free_cloud.py yang dikunci tepat 20 bot tanpa nama, paralel 5,
+# histori per sukses, dan mengubah status klaim toko menjadi success
+# otomatis bila total tepat 20.
+# File lama (follow_bot.yml, follow_cloud.py, lookup_poll.py) TIDAK
+# DIUBAH sama sekali — workflow ini hanya menambah file baru.
+name: Follow Gratis 20
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target: UUID pemain atau Nama#Kode klaim'
+        required: true
+      claim_id:
+        description: 'ID klaim free_follower_claims (boleh kosong bila manual)'
+        required: false
+        default: ''
+
+jobs:
+  follow_gratis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Ambil Kode Repo
+        uses: actions/checkout@v4
+
+      - name: Siapkan Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install curl_cffi==0.16.0 requests==2.34.2 typing_extensions==4.16.0 urllib3
+
+      - name: Jalankan Follow Gratis 20
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PANEL_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          PANEL_SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SHOP_SUPABASE_URL: ${{ secrets.SHOP_SUPABASE_URL }}
+          SHOP_SUPABASE_SERVICE_KEY: ${{ secrets.SHOP_SUPABASE_SERVICE_KEY }}
+          PROBE_EMAIL: ${{ secrets.PROBE_EMAIL }}
+          PROBE_PASSWORD: ${{ secrets.PROBE_PASSWORD }}
+          PROBE_DEVICE_ID: ${{ secrets.PROBE_DEVICE_ID }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+        run: python -u follow_free_cloud.py "${{ github.event.inputs.target }}" "${{ github.event.inputs.claim_id }}"
