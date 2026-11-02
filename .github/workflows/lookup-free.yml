@@ -1,0 +1,51 @@
+# Poller UUID klaim gratis — workflow BARU, khusus tabel
+# free_follower_claims. BUKAN lookup-poll.yml (poller order): file
+# lama TIDAK DIUBAH sama sekali.
+# Pemicu: cron 10 menit (jaring pengaman), repository_dispatch
+# 'new-claim' dari trigger database toko saat klaim dibuat, dan
+# manual dispatch.
+name: Lookup Klaim Gratis
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [new-claim]
+
+# Antrean: satu run dalam satu waktu, run baru MENUNGGU.
+concurrency:
+  group: lookup-free
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install curl_cffi urllib3
+
+      - name: Run poller klaim
+        env:
+          SUPABASE_URL: ${{ secrets.SHOP_SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SHOP_SUPABASE_SERVICE_KEY }}
+          PANEL_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          PANEL_SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PROBE_EMAIL: ${{ secrets.PROBE_EMAIL }}
+          PROBE_PASSWORD: ${{ secrets.PROBE_PASSWORD }}
+          PROBE_DEVICE_ID: ${{ secrets.PROBE_DEVICE_ID }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+        run: python -u lookup_free_cloud.py
