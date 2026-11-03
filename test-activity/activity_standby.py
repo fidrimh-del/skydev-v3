@@ -67,9 +67,14 @@ def get_bots(bot_type, limit):
     for tipe in order:
         rpc = ("get_fresh_named_bots" if tipe == "named_bots"
                else "get_fresh_bots")
+        # RPC follow wajib p_target_uuid (tanpa itu PostgREST 404:
+        # tidak ada overload yang cocok). UUID nol = tidak ada bot
+        # yang punya histori terhadapnya, jadi tanpa filter — tepat
+        # untuk standby yang tidak menulis histori apa pun.
         req = urllib.request.Request(
             url + f"/rest/v1/rpc/{rpc}",
-            data=json.dumps({"p_limit": limit}).encode("utf-8"),
+            data=json.dumps({"p_target_uuid": "00000000-0000-0000-0000-000000000000",
+                      "p_limit": limit}).encode("utf-8"),
             headers={"apikey": key, "Authorization": "Bearer " + key,
                      "Content-Type": "application/json"},
             method="POST")
