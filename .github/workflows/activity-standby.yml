@@ -24,7 +24,7 @@ on:
       bot_type:
         description: "Tipe bot: named_bots atau accounts"
         required: false
-        default: "named_bots"
+        default: "accounts"
 jobs:
   standby:
     runs-on: ubuntu-latest
