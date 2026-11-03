@@ -111,6 +111,15 @@ async def login_for_activity(session, bot, activity_id):
     # AllocateActivityRequest), dan world Bartes ada di blr1
     # (hostname gs digitalocean-blr1-02). Maka blr1 WAJIB di percobaan
     # pertama; tanpa-datacenterId hanya fallback bila blr1 tanpa host.
+    # TEMUAN PROBE 2026-11-03: /lobby/allocation adalah allocator GENERIC
+    # (selalu gameServerType DEFAULT, datacenterId diabaikan, geo-default
+    # nyc3) — BUKAN alokasi activity. Endpoint activity yang benar adalah
+    # /lobby/activity/allocation (terbukti mengembalikan gameServerType
+    # ACTIVITY, pod activity-tier-0, room stabil per activity). Inilah
+    # penyebab run 2 & 3 tidak terlihat: bot tidak pernah sampai ke
+    # instance activity mana pun. datacenterId tetap dikirim (diabaikan
+    # lobby, tidak merugikan); routing region ditentukan lobby dari sisi
+    # requester.
     for attempt, extra in enumerate([
             {"userToken": jwt,
              "gameServerProtocolVersion": L.GAME_PROTOCOL,
@@ -122,7 +131,7 @@ async def login_for_activity(session, bot, activity_id):
     ], 1):
         b = json.dumps(extra, separators=(",", ":")).encode("utf-8")
         try:
-            r = await session.post(L.LOBBY_URL + "/lobby/allocation",
+            r = await session.post(L.LOBBY_URL + "/lobby/activity/allocation",
                                    data=b, headers=L.HEADERS_BASE.copy(),
                                    timeout=20)
             body = r.json()
@@ -134,7 +143,8 @@ async def login_for_activity(session, bot, activity_id):
         print(f"[*] Alokasi activity percobaan {attempt}: "
               f"host={host} port={port} "
               f"gsid={'ada' if gsid else 'KOSONG'} "
-              f"kunci={list(body.keys())[:8] if isinstance(body, dict) else '?'}")
+              f"type={body.get('gameServerType', '?') if isinstance(body, dict) else '?'} "
+              f"dc={body.get('gameServerDatacenterId', '?') if isinstance(body, dict) else '?'}")
         if host and port:
             return jwt, host, port, gsid
     return jwt, None, None, None
