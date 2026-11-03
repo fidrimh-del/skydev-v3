@@ -22,7 +22,10 @@ ATURAN UJI COBA (sama seperti standby):
   - Satu bot gagal tidak menggagalkan bot lain.
 
 CARA PAKAI:
-  python -u activity_joinleave.py <activity_id> [jumlah=5] [bot_type=named_bots]
+  python -u activity_joinleave.py <activity_id> [jumlah=5] [bot_type=named_bots] [tahan_detik=0]
+  tahan_detik: 0 = keluar langsung setelah MASUK (tes pertama, 2026-11-04:
+  total TIDAK naik) ; >0 = tahan sekian detik setelah MASUK lalu keluar
+  (menguji hipotesis ambang minimal presence).
   atau lewat env: ACTIVITY_ID, JUMLAH, BOT_TYPE.
   Env Supabase panel: SUPABASE_URL / SUPABASE_SERVICE_KEY
   (atau PANEL_SUPABASE_URL / PANEL_SUPABASE_SERVICE_KEY).
@@ -147,9 +150,10 @@ async def login_for_activity(session, bot, activity_id):
     return jwt, None, None, None
 
 
-def joinleave_thread(idx, total, bot, jwt, host, port, gsid):
-    """Satu bot: TCP + login + init + activity/get + KELUAR langsung.
-    Berjalan di thread sendiri (socket blocking). Kembalikan dict hasil."""
+def joinleave_thread(idx, total, bot, jwt, host, port, gsid, tahan_detik=0):
+    """Satu bot: TCP + login + init + activity/get + (opsional TAHAN
+    sekian detik) + KELUAR. Berjalan di thread sendiri (socket blocking).
+    Kembalikan dict hasil."""
     tag = f"Bot {idx}/{total}"
     t0 = time.time()
     res = {"tag": tag, "masuk": False, "online_detik": 0,
@@ -194,7 +198,20 @@ def joinleave_thread(idx, total, bot, jwt, host, port, gsid):
         s.close()
         return res
     res["masuk"] = True
-    print(f"[+] {tag}: MASUK activity, KELUAR langsung (tanpa tahan) ...")
+    if tahan_detik > 0:
+        print(f"[+] {tag}: MASUK activity, TAHAN {tahan_detik} detik "
+              f"lalu KELUAR ...")
+        deadline = time.time() + tahan_detik
+        while time.time() < deadline:
+            _fr, closed, pongs = L.read_frames(s, 5)
+            res["pongs"] += pongs
+            if closed:
+                res["putus"] = round(time.time() - t0)
+                print(f"[!] {tag}: koneksi DITUTUP server di detik "
+                      f"{res['putus']} (dari tahan {tahan_detik}).")
+                break
+    else:
+        print(f"[+] {tag}: MASUK activity, KELUAR langsung (tanpa tahan) ...")
     res["online_detik"] = round(time.time() - t0)
     try:
         s.close()
@@ -203,14 +220,15 @@ def joinleave_thread(idx, total, bot, jwt, host, port, gsid):
     return res
 
 
-async def main_async(activity_id, jumlah, bot_type):
+async def main_async(activity_id, jumlah, bot_type, tahan_detik):
     bots, dipakai = get_bots(bot_type, jumlah)
     if not bots:
         print("[!] Tidak ada bot — berhenti.")
         return 1
     bots = bots[:jumlah]
     print(f"[*] Uji join-leave activity {activity_id}: {len(bots)} bot "
-          f"(tipe {dipakai}), keluar langsung setelah MASUK.")
+          f"(tipe {dipakai}), "
+          f"{'keluar langsung setelah MASUK' if tahan_detik <= 0 else f'tahan {tahan_detik} detik setelah MASUK lalu keluar'}.")
     t0 = time.time()
     siap = []
     # PERCEPATAN JOIN (permintaan Bartes 2026-11-03: 100 bot jangan lama):
@@ -246,7 +264,7 @@ async def main_async(activity_id, jumlah, bot_type):
     with concurrent.futures.ThreadPoolExecutor(
             max_workers=len(siap)) as ex:
         futs = [ex.submit(joinleave_thread, i, len(bots), bot, jwt,
-                          host, port, gsid)
+                          host, port, gsid, tahan_detik)
                 for (i, bot, jwt, host, port, gsid) in siap]
         for f in concurrent.futures.as_completed(futs):
             hasil.append(f.result())
@@ -254,7 +272,7 @@ async def main_async(activity_id, jumlah, bot_type):
     print("=" * 56)
     print(f"HASIL JOIN-LEAVE ACTIVITY: {activity_id}")
     print(f"  Bot diminta: {len(bots)} | dapat server: {len(siap)} | "
-          f"masuk: {masuk} | keluar: {masuk}")
+          f"masuk: {masuk} | keluar: {masuk} | tahan: {tahan_detik} dtk")
     for h in sorted(hasil, key=lambda x: x["tag"]):
         print(f"  {h['tag']}: server {h['server']} room={h['room']} "
               f"online {h['online_detik']} dtk pongs={h['pongs']} "
@@ -269,13 +287,15 @@ def main():
                    else os.getenv("ACTIVITY_ID", ""))
     if not activity_id:
         print("Pakai: activity_joinleave.py <activity_id> "
-              "[jumlah=5] [bot_type=named_bots]")
+              "[jumlah=5] [bot_type=named_bots] [tahan_detik=0]")
         return 2
     jumlah = int(sys.argv[2] if len(sys.argv) > 2
                  else os.getenv("JUMLAH", "5"))
     bot_type = (sys.argv[3] if len(sys.argv) > 3
                 else os.getenv("BOT_TYPE", "named_bots"))
-    return asyncio.run(main_async(activity_id, jumlah, bot_type))
+    tahan = int(sys.argv[4] if len(sys.argv) > 4
+                else os.getenv("TAHAN_DETIK", "0"))
+    return asyncio.run(main_async(activity_id, jumlah, bot_type, tahan))
 
 
 if __name__ == "__main__":
