@@ -259,15 +259,29 @@ async def main_async(activity_id, jumlah, bot_type, tahan_detik):
     if not siap:
         print("[!] TIDAK ADA bot yang dapat server activity.")
         return 1
-    print(f"[*] {len(siap)} bot dapat server, mulai join-leave paralel ...")
+    # BATCHING (untuk 1000 bot): fase TCP JANGAN sekaligus 1000 thread +
+    # 1000 socket dalam satu proses (rawan batas file descriptor runner).
+    # Diproses per batch 200: tiap batch connect + tahan + keluar, lalu
+    # batch berikut. Login+alokasi di atas tetap paralel Semaphore 20.
+    # Counter tetap naik per join di tiap batch; total waktu ~3-4 menit
+    # untuk 1000 bot, jauh di bawah timeout workflow 15 menit.
+    print(f"[*] {len(siap)} bot dapat server, mulai join-leave paralel "
+          f"per batch 200 ...")
     hasil = []
-    with concurrent.futures.ThreadPoolExecutor(
-            max_workers=len(siap)) as ex:
-        futs = [ex.submit(joinleave_thread, i, len(bots), bot, jwt,
-                          host, port, gsid, tahan_detik)
-                for (i, bot, jwt, host, port, gsid) in siap]
-        for f in concurrent.futures.as_completed(futs):
-            hasil.append(f.result())
+    batch = 200
+    for b0 in range(0, len(siap), batch):
+        chunk = siap[b0:b0 + batch]
+        print(f"[*] Batch {b0 // batch + 1}/{(len(siap) + batch - 1) // batch}: "
+              f"{len(chunk)} bot ...")
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(chunk)) as ex:
+            futs = [ex.submit(joinleave_thread, i, len(bots), bot, jwt,
+                              host, port, gsid, tahan_detik)
+                    for (i, bot, jwt, host, port, gsid) in chunk]
+            for f in concurrent.futures.as_completed(futs):
+                hasil.append(f.result())
+        print(f"[*] Batch {b0 // batch + 1} selesai: "
+              f"masuk {sum(1 for h in hasil if h['masuk'])} sejauh ini.")
     masuk = sum(1 for h in hasil if h["masuk"])
     print("=" * 56)
     print(f"HASIL JOIN-LEAVE ACTIVITY: {activity_id}")
