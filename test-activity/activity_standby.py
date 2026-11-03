@@ -24,7 +24,7 @@ ATURAN UJI COBA:
   - Satu bot gagal tidak menggagalkan bot lain.
 
 CARA PAKAI:
-  python -u activity_standby.py <activity_id> [jumlah=5] [durasi_menit=60] [bot_type=named_bots]
+  python -u activity_standby.py <activity_id> [jumlah=5] [durasi_menit=60] [bot_type=accounts]
   atau lewat env: ACTIVITY_ID, JUMLAH, DURASI_MENIT, BOT_TYPE.
   Env Supabase panel: SUPABASE_URL / SUPABASE_SERVICE_KEY
   (atau PANEL_SUPABASE_URL / PANEL_SUPABASE_SERVICE_KEY).
@@ -285,14 +285,14 @@ def main():
                    else os.getenv("ACTIVITY_ID", ""))
     if not activity_id:
         print("Pakai: activity_standby.py <activity_id> "
-              "[jumlah=5] [durasi_menit=60] [bot_type=named_bots]")
+              "[jumlah=5] [durasi_menit=60] [bot_type=accounts]")
         return 2
     jumlah = int(sys.argv[2] if len(sys.argv) > 2
                  else os.getenv("JUMLAH", "5"))
     durasi = int(sys.argv[3] if len(sys.argv) > 3
                  else os.getenv("DURASI_MENIT", "60"))
     bot_type = (sys.argv[4] if len(sys.argv) > 4
-                else os.getenv("BOT_TYPE", "named_bots"))
+                else os.getenv("BOT_TYPE", "accounts"))
     return asyncio.run(main_async(activity_id, jumlah, durasi, bot_type))
 
 
