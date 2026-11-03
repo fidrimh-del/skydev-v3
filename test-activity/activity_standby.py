@@ -226,16 +226,31 @@ async def main_async(activity_id, jumlah, durasi_menit, bot_type):
           f"(tipe {dipakai}), durasi {durasi_menit} menit.")
     t0 = time.time()
     siap = []
-    async with L.AsyncSession(impersonate="chrome110",
-                              verify=False) as session:
-        for i, bot in enumerate(bots, 1):
+    # PERCEPATAN JOIN (permintaan Bartes 2026-11-03: 100 bot jangan lama):
+    # fase login+alokasi DULU berurutan (~1,2 detik/bot -> 100 bot = 2 menit).
+    # Kini paralel dengan Semaphore 20 (angka yang sudah terbukti aman di
+    # like-profile paralel 20): 100 bot ~6-10 detik. gather mempertahankan
+    # urutan input, jadi `siap` tetap terurut nomor bot. Satu sesi
+    # AsyncSession dipakai bersama (curl_cffi AsyncSession dirancang untuk
+    # request bersamaan; pola yang sama dipakai alur register produksi).
+    sem = asyncio.Semaphore(20)
+
+    async def login_satu(i, bot):
+        async with sem:
             print(f"[*] --- Login + alokasi Bot {i}/{len(bots)} ---")
             jwt, host, port, gsid = await login_for_activity(
                 session, bot, activity_id)
             if not host or not port:
                 print(f"[-] Bot {i}/{len(bots)}: alokasi activity gagal.")
-                continue
-            siap.append((i, bot, jwt, host, port, gsid))
+            return (i, bot, jwt, host, port, gsid)
+
+    async with L.AsyncSession(impersonate="chrome110",
+                              verify=False) as session:
+        hasil_login = await asyncio.gather(
+            *(login_satu(i, bot) for i, bot in enumerate(bots, 1)))
+        siap = [(i, bot, jwt, host, port, gsid)
+                for (i, bot, jwt, host, port, gsid) in hasil_login
+                if host and port]
     if not siap:
         print("[!] TIDAK ADA bot yang dapat server activity.")
         return 1
