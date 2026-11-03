@@ -103,16 +103,22 @@ async def login_for_activity(session, bot, activity_id):
         bot["email"], bot["password"], bot["device_id"], session)
     if not jwt:
         return None, None, None, None
-    # Percobaan 1: tanpa datacenterId. Percobaan 2 (bila tanpa host):
-    # datacenterId "blr1" (dari hostname gs di netlog: digitalocean-blr1).
+    # Pelajaran run 41580669027: percobaan TANPA datacenterId berhasil
+    # (201) tapi lobby memberi host lain (167.172.239.25:20102,
+    # 45.55.68.126:20466) — BUKAN instance blr1 world Bartes
+    # (168.144.153.155:20442) — sehingga bot tidak terlihat walau sempat
+    # "MASUK". Client game selalu mengirim datacenterId (field
+    # AllocateActivityRequest), dan world Bartes ada di blr1
+    # (hostname gs digitalocean-blr1-02). Maka blr1 WAJIB di percobaan
+    # pertama; tanpa-datacenterId hanya fallback bila blr1 tanpa host.
     for attempt, extra in enumerate([
-            {"userToken": jwt,
-             "gameServerProtocolVersion": L.GAME_PROTOCOL,
-             "isPrivate": False, "activityId": activity_id},
             {"userToken": jwt,
              "gameServerProtocolVersion": L.GAME_PROTOCOL,
              "isPrivate": False, "activityId": activity_id,
              "datacenterId": "blr1"},
+            {"userToken": jwt,
+             "gameServerProtocolVersion": L.GAME_PROTOCOL,
+             "isPrivate": False, "activityId": activity_id},
     ], 1):
         b = json.dumps(extra, separators=(",", ":")).encode("utf-8")
         try:
@@ -158,9 +164,16 @@ def standby_thread(idx, total, bot, jwt, host, port, gsid, durasi_detik):
         _tbugv, room = L.scan_login_window(frames)
     except Exception:
         room = None
-    if room is None and gsid:
-        print(f"[*] {tag}: tidak auto-join, coba tcp_join_only ...")
-        room = L.tcp_join_only(s, gsid)
+    # Pelajaran run 41580669027: client game TIDAK PERNAH mengirim
+    # frame join-room untuk activity (log v15/v17: login -> init ->
+    # activity/get, tanpa room frame). tcp_join_only di sini selalu
+    # gagal (room 0-3) dan 3 koneksi ditutup server (Broken pipe) saat
+    # kirim init sesudahnya. Maka JANGAN join-room manual: langsung
+    # kirim init + activity/get seperti client game; room hanya info
+    # bila server memberikannya di jendela login.
+    if room is None:
+        print(f"[*] {tag}: tidak auto-join (room=None) — lanjut kirim "
+              f"init + activity/get seperti client game ...")
     res["room"] = room
     print(f"[+] {tag}: login OK (playerId={pid}, room={room}). "
           f"Kirim init + activity/get ...")
