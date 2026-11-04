@@ -1,0 +1,70 @@
+# SKYDEV Like Profil DIAGNOSA Gemini (file terpisah) — uji saran Gemini
+# terhadap like profil via like_profile_diag_gemini.py, BUKAN via
+# file produksi (like_profile_cloud.py / like_profile_probe.py) dan
+# BUKAN via like_profile_diag.py.
+#
+# Dibuat 2026-11-04 atas permintaan Bartes: diagnosis habis-habisan
+# dengan mencoba saran Gemini, ke UUID Skydev#431 (aae2efe1), bukan ke
+# UUID customer yang sudah di-refund. Workflow ini HANYA menjalankan
+# file diagnosa Gemini; workflow produksi tidak diubah/dipanggil.
+#
+# Yang diuji: (1) WAIT-LOGIN — tunggu balasan login (tbugv/JoinedRoom)
+# sebelum Create; (2) JOIN — JoinRoom gaya jalur house sebelum Create;
+# (3) NONBLOCK — jeda settle/retry diisi loop baca (auto-pong), bukan
+# sleep buta. Paralel tetap input (default 50, sama dengan baseline)
+# supaya laju tidak menjadi variabel pengganggu. Tiap bot tetap
+# mencatat ack/join-nya, jadi ringkasan menunjukkan korelasi
+# ack/join vs sukses — bukan asumsi. Bot gagal TIDAK ditulis ke
+# histori (sama seperti produksi), jadi tes ini tidak membuang stok.
+name: SKYDEV Like Profil DIAGNOSA Gemini (file terpisah)
+on:
+  workflow_dispatch:
+    inputs:
+      target_uuid:
+        description: "Target UUID (diagnosa ke UUID ini)"
+        required: true
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      jumlah:
+        description: "Jumlah bot diagnosa"
+        required: true
+        default: "50"
+      max_paralel:
+        description: "Worker bersamaan (maks 50)"
+        required: false
+        default: "50"
+      bot_type:
+        description: "Tipe bot: accounts atau named_bots"
+        required: false
+        default: "accounts"
+      wait_login:
+        description: "1 = tunggu balasan login sebelum Create, 0 = langsung Create"
+        required: false
+        default: "1"
+      join:
+        description: "1 = JoinRoom sebelum Create, 0 = tanpa JOIN"
+        required: false
+        default: "1"
+      nonblock:
+        description: "1 = jeda diisi loop baca (auto-pong), 0 = sleep buta"
+        required: false
+        default: "1"
+jobs:
+  like_profil_diag_gemini:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u like_profile_diag_gemini.py "${{ inputs.target_uuid }}" "${{ inputs.jumlah }}" "${{ inputs.max_paralel }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BOT_TYPE: ${{ inputs.bot_type }}
+          GEM_WAIT_LOGIN: ${{ inputs.wait_login }}
+          GEM_JOIN: ${{ inputs.join }}
+          GEM_NONBLOCK: ${{ inputs.nonblock }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
