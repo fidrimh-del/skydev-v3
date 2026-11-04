@@ -158,6 +158,23 @@ def decode_is_there_result(frame):
     return out
 
 
+def _is_tbugv(frame):
+    """Event 'tbugv': payload 0x05 + varint-len + nama 'tbugv'."""
+    if len(frame) >= 2 and frame[0] == 0x05:
+        try:
+            ln = frame[1]
+            if ln < 0x80 and frame[2:2 + ln] == b"tbugv":
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _is_joinedroom(frame):
+    """JoinedRoom sukses: opcode 0x06, success byte 1, roomId 4 byte."""
+    return len(frame) >= 6 and frame[0] == 0x06 and frame[1] == 1
+
+
 class FrameReader:
     """Pembaca frame dengan buffer persisten + early-exit + auto-pong.
     Tidak seperti read_frames() (selalu membakar jendela penuh),
@@ -375,7 +392,8 @@ async def like_once(session, bot, target_uuid):
     sesudah DIPERTAHANKAN sebagai bukti kirim (pengganti HTTP 200;
     Create TCP tidak pernah dibalas, jadi tanpa ini "terkirim" =
     klaim tanpa bukti).
-    Alur: login -> Create SEKALI -> jeda 2 dtk -> IsThere-sesudah
+    Alur: login -> WAIT-LOGIN (baca tbugv/JoinedRoom, maks 3 dtk) ->
+    Create SEKALI -> jeda 2 dtk -> IsThere-sesudah
     (+1x ulang kalau belum True).
     Create SEKALI per sesi penuh (aturan keras terpenuhi penuh).
     Kembalikan dict (dengan flag "answered": True bila ada satu pun
@@ -405,6 +423,29 @@ async def like_once(session, bot, target_uuid):
         vlog(f"[-] Gagal kirim event login: {e}")
         s.close()
         return None
+
+    # WAIT-LOGIN (2026-11-04, terbukti di diagnosis file terpisah):
+    # baca jendela login sampai event 'tbugv' atau JoinedRoom tiba
+    # (maks 3 dtk, early-exit; bila tbugv tiba, amati 1 dtk lagi
+    # apakah auto-join menyusul) SEBELUM Create. Tanpa wait, Create
+    # yang dikirim saat sesi belum mapan ditolak diam-diam server
+    # saat jendela jenuh (IsThere menjawab False), sementara sesi
+    # yang sudah mapan selalu diterima — terbukti 50/50 vs baseline
+    # 0/50 pada target/bot/paralel yang sama, 2 menit berselang.
+    # Predikat HARUS cek nama event: opcode 0x05 saja tidak cukup
+    # (event ambient apa pun akan melepas barrier terlalu dini).
+    # Bila koneksi tertutup saat menunggu, gagal cepat (None) seperti
+    # tcp-fail; bila timeout tanpa ACK tapi koneksi hidup, tetap
+    # kirim Create (kasus ack=none di diagnosis tetap lolos).
+    _ack, _closed = reader.read_until(
+        lambda f: _is_tbugv(f) or _is_joinedroom(f), 3.0)
+    if _closed:
+        vlog("[-] Koneksi tertutup saat menunggu balasan login.")
+        s.close()
+        return None
+    if _ack is not None and _is_tbugv(_ack):
+        reader.read_until(_is_joinedroom, 1.0)
+    vlog("[+] Jendela login dibaca sebelum Create.")
 
     def do_is_there():
         frame = L.build_room_event_varint(
