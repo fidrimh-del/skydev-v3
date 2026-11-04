@@ -132,9 +132,19 @@ def get_telegram_settings():
 def build_message(order, status):
     """Susun (teks, reply_markup) persis format lama kirim_notif_telegram."""
     snap = order.get("package_snapshot") or {}
+    # Label per tipe produk. JANGAN jadikan "Followers" sebagai default:
+    # tipe like_profil/like_rumah dulu jatuh ke else dan salah dilabel
+    # Followers di Telegram (order rumah PKXD-ENU2E9, 2026-11-04).
+    # Tipe tak dikenal -> tanpa suffix (lebih aman daripada label salah).
+    tipe_label = {
+        "followers": " Followers",
+        "likes": " Like Postingan",
+        "like_profil": " Like Profil",
+        "like_rumah": " Like Rumah",
+    }.get(snap.get("type"), "")
     paket_label = (
         f"{snap.get('name', 'Paket PK XD')} — {snap.get('amount', '')}"
-        + (" Like Postingan" if snap.get("type") == "likes" else " Followers"))
+        + tipe_label)
     pkxd = order.get("customer_pkxd_id") or "-"
     email_akun = None
     uid = order.get("customer_user_id")
