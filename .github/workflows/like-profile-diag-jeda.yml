@@ -1,0 +1,60 @@
+# SKYDEV Like Profil DIAGNOSA Jeda (1 run, grup 100 + jeda) — file terpisah
+#
+# Dibuat 2026-11-04 atas permintaan Bartes: "1 run saja tapi kita
+# gunakan jeda" — menguji apakah SATU run dengan jeda internal bisa
+# melewati gate alokasi ~120, atau gate itu per-runner sehingga grup
+# 2 tetap menembok 429. Menjalankan like_profile_diag_jeda.py, BUKAN
+# file produksi (like_profile_cloud.py / like_profile_probe.py).
+# Workflow produksi tidak diubah/dipanggil.
+#
+# Cara kerja: bot dibagi grup 100; antar grup sleep jeda_detik;
+# SEMUA grup jalan di runner yang SAMA (satu job, satu IP) — inilah
+# variabel yang diuji. Alur per-bot PERSIS diag-login (wait-login +
+# rekam frame + Create sekali + IsThere + history_put bila True).
+# Frame yang dikirim (login frame berisi JWT) TIDAK PERNAH dicetak.
+# Bot gagal TIDAK ditulis ke histori (sama seperti produksi), jadi
+# tes ini tidak membuang stok.
+#
+# Tangga tes (perintah Bartes): jeda 30 detik dulu; kalau berhasil,
+# turun ke 10 detik (cukup ubah input jeda_detik, tanpa ubah kode).
+name: SKYDEV Like Profil DIAGNOSA Jeda (1 run, grup 100 + jeda)
+on:
+  workflow_dispatch:
+    inputs:
+      target_uuid:
+        description: "Target UUID (diagnosa ke UUID ini)"
+        required: true
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      jumlah:
+        description: "Jumlah bot diagnosa"
+        required: true
+        default: "200"
+      max_paralel:
+        description: "Worker bersamaan (maks 50)"
+        required: false
+        default: "20"
+      bot_type:
+        description: "Tipe bot: accounts atau named_bots"
+        required: false
+        default: "accounts"
+      jeda_detik:
+        description: "Jeda detik antar grup 100 bot, satu runner"
+        required: false
+        default: "30"
+jobs:
+  like_profil_diag_jeda:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u like_profile_diag_jeda.py "${{ inputs.target_uuid }}" "${{ inputs.jumlah }}" "${{ inputs.max_paralel }}" "${{ inputs.jeda_detik }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BOT_TYPE: ${{ inputs.bot_type }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
