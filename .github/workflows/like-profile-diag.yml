@@ -37,6 +37,10 @@ on:
         description: "Tipe bot: accounts atau named_bots"
         required: false
         default: "accounts"
+      created_after:
+        description: "Opsional: hanya pakai bot dibuat setelah timestamp ISO ini (mode bot baru)"
+        required: false
+        default: ""
 jobs:
   like_profil_diag:
     runs-on: ubuntu-latest
@@ -47,7 +51,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install curl_cffi urllib3
-      - run: python -u like_profile_diag.py "${{ inputs.target_uuid }}" "${{ inputs.jumlah }}" "${{ inputs.max_paralel }}"
+      - run: python -u like_profile_diag.py "${{ inputs.target_uuid }}" "${{ inputs.jumlah }}" "${{ inputs.max_paralel }}" "${{ inputs.created_after }}"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
