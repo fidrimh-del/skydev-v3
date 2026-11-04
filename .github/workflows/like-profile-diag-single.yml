@@ -1,0 +1,45 @@
+# SKYDEV Like Profil DIAGNOSA Single Bot (file terpisah) — 1 bot, tanpa paralel.
+#
+# Dibuat 2026-11-04 atas permintaan Bartes: 1 like profil saja ke satu
+# UUID, dengan log langkah-demi-langkah yang lengkap, TANPA paralel,
+# untuk melihat apakah penolakan di target tertutup (aae2efe1) memang
+# cooldown server atau ada langkah yang gagal.
+#
+# File TERPISAH: hanya menjalankan like_profile_diag_single.py.
+# File produksi like-profile.yml dan file diagnosa 50/60 bot tidak
+# diubah dan tidak dipanggil dari sini. Bot gagal TIDAK ditulis ke
+# histori (sama seperti produksi), jadi tes ini tidak membuang stok.
+name: SKYDEV Like Profil DIAGNOSA Single Bot (file terpisah)
+on:
+  workflow_dispatch:
+    inputs:
+      target_uuid:
+        description: "Target UUID (diagnosa ke UUID ini)"
+        required: true
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      bot_type:
+        description: "Tipe bot: accounts atau named_bots"
+        required: false
+        default: "accounts"
+      created_after:
+        description: "Opsional: hanya pakai bot dibuat setelah timestamp ISO ini (mode bot baru)"
+        required: false
+        default: ""
+jobs:
+  like_profil_diag_single:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u like_profile_diag_single.py "${{ inputs.target_uuid }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BOT_TYPE: ${{ inputs.bot_type }}
+          DIAG_CREATED_AFTER: ${{ inputs.created_after }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
