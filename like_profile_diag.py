@@ -32,11 +32,14 @@ Kredensial TIDAK PERNAH dicetak (hanya "DIAG Bot N").
 """
 
 import asyncio
+import json
 import os
 import random
 import statistics
 import sys
 import time
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -161,6 +164,38 @@ async def diag_once(bot, idx, target_uuid):
     return r
 
 
+def fetch_new_bots(bot_type, created_after, limit):
+    """Ambil bot yang dibuat SETELAH created_after (timestamp ISO),
+    langsung dari tabel accounts/named_bots via PostgREST (bukan RPC
+    acak), supaya tes like memakai persis bot baru hasil run
+    pembuatan. Kembalikan list triple (email, password, device_id)."""
+    base = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_SERVICE_KEY", "")
+    if not base or not key:
+        print("[!] DIAG: SUPABASE_URL/KEY kosong — mode created_after batal.")
+        return []
+    table = "named_bots" if bot_type == "named_bots" else "accounts"
+    params = {
+        "select": "email,password,device_id",
+        "status": "eq.SUCCESS",
+        "created_at": f"gte.{created_after}",
+        "order": "created_at.asc",
+        "limit": str(limit),
+    }
+    url = f"{base}/rest/v1/{table}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url)
+    req.add_header("apikey", key)
+    req.add_header("Authorization", f"Bearer {key}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            rows = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"[!] DIAG: fetch created_after gagal: {type(e).__name__}: {e}")
+        return []
+    return [r for r in rows
+            if r.get("email") and r.get("password") and r.get("device_id")]
+
+
 def _run_bot(args):
     bot, idx, target = args
     return asyncio.run(diag_once(bot, idx, target))
@@ -172,10 +207,16 @@ def main():
     jumlah = int(sys.argv[2]) if len(sys.argv) > 2 else 50
     max_paralel = int(sys.argv[3]) if len(sys.argv) > 3 else 50
     bot_type = os.getenv("BOT_TYPE", "accounts")
+    created_after = ((sys.argv[4] if len(sys.argv) > 4 else "")
+                     or os.getenv("DIAG_CREATED_AFTER", ""))
     print(f"[*] DIAG like profil | target {target} | "
-          f"jumlah {jumlah} | paralel {max_paralel} | bot {bot_type}")
+          f"jumlah {jumlah} | paralel {max_paralel} | bot {bot_type}"
+          + (f" | mode created_after>={created_after}" if created_after else ""))
     t_run = time.time()
-    bots = P.get_profile_bots(target, limit=jumlah)
+    if created_after:
+        bots = fetch_new_bots(bot_type, created_after, jumlah)
+    else:
+        bots = P.get_profile_bots(target, limit=jumlah)
     print(f"[*] DIAG fetch: didapat {len(bots)} bot "
           f"(diminta {jumlah})"
           + (" | FETCH KURANG DARI DIMINTA" if len(bots) < jumlah else ""))
@@ -225,7 +266,8 @@ def main():
         servers[r["server"]] = servers.get(r["server"], 0) + 1
     print("=" * 56)
     print("HASIL DIAG")
-    print(f"  target: {target} | bot: {bot_type} | paralel: {max_paralel}")
+    print(f"  target: {target} | bot: {bot_type} | paralel: {max_paralel}"
+          + (f" | created_after>={created_after}" if created_after else ""))
     print(f"  diminta: {jumlah} | didapat server: {len(bots)}")
     print(f"  sukses: {sukses} | fail-answered (IsThere False): {fa} | "
           f"fail-noanswer: {fn} | tcp-fail: {tcpf} | lain: {lain}")
