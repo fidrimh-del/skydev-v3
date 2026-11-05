@@ -254,10 +254,15 @@ def get_bots(target_uuid, limit=8):
     return bots
 
 
-def get_profile_bots(target_uuid, limit=8):
+def get_profile_bots(target_uuid, limit=8, partisi=None, jumlah_partisi=None):
     """Bot FRESH untuk like PROFIL, langsung dari Supabase panel
     lewat RPC BARU get_fresh_profile_like_bots /
     get_fresh_named_profile_like_bots (2026-11-01).
+    Mode matrix (2026-11-05): bila partisi + jumlah_partisi diisi,
+    pakai RPC _part (get_fresh_*_part) dengan p_partisi /
+    p_jumlah_partisi, sehingga tiap leg matrix mendapat bot yang
+    saling lepas (partisi hash email, tanpa perlu offset).
+    Tanpa keduanya = perilaku lama persis.
 
     BEDA dengan get_bots() di atas: get_bots() memakai RPC lama
     get_fresh_bots yang HANYA memfilter follow_history, sehingga
@@ -275,10 +280,14 @@ def get_profile_bots(target_uuid, limit=8):
     _rpc = ("get_fresh_named_profile_like_bots"
             if os.getenv("BOT_TYPE", "accounts") == "named_bots"
             else "get_fresh_profile_like_bots")
+    payload = {"p_target_uuid": target_uuid, "p_limit": limit}
+    if partisi is not None and jumlah_partisi:
+        _rpc += "_part"
+        payload["p_partisi"] = partisi
+        payload["p_jumlah_partisi"] = jumlah_partisi
     req = urllib.request.Request(
         url + f"/rest/v1/rpc/{_rpc}",
-        data=json.dumps({"p_target_uuid": target_uuid,
-                         "p_limit": limit}).encode("utf-8"),
+        data=json.dumps(payload).encode("utf-8"),
         headers={"apikey": key, "Authorization": "Bearer " + key,
                  "Content-Type": "application/json"},
         method="POST")
