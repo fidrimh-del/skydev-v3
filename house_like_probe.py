@@ -127,7 +127,7 @@ def history_put_house(bot_email, target_uuid, source="probe"):
         print(f"[!] history_put_house gagal ({e}) (like tetap sah).")
 
 
-def get_house_bots(target_uuid, limit=8):
+def get_house_bots(target_uuid, limit=8, partisi=None, jumlah_partisi=None):
     """Bot FRESH untuk like RUMAH, langsung dari Supabase panel
     lewat RPC BARU get_fresh_house_like_bots /
     get_fresh_named_house_like_bots (2026-11-01).
@@ -137,18 +137,25 @@ def get_house_bots(target_uuid, limit=8):
     house_like_history langsung di DB, jadi daftar yang
     dikembalikan sudah benar-benar fresh untuk target rumah ini.
     Kembalikan [] bila RPC gagal, supaya pemanggil bisa fallback
-    ke jalur lama."""
+    ke jalur lama.
+    Mode matrix: bila partisi/jumlah_partisi diisi, pakai RPC _part
+    dengan parameter partisi (pemanggil tidak memakai fallback
+    jalur lama dalam mode ini)."""
     url, key = P._supabase()
     if not url or not key:
         print("[-] SUPABASE_URL / SUPABASE_SERVICE_KEY tidak ada di env.")
         return []
-    _rpc = ("get_fresh_named_house_like_bots"
-            if os.getenv("BOT_TYPE", "accounts") == "named_bots"
-            else "get_fresh_house_like_bots")
+    _base = ("get_fresh_named_house_like_bots"
+             if os.getenv("BOT_TYPE", "accounts") == "named_bots"
+             else "get_fresh_house_like_bots")
+    _rpc = _base + ("_part" if partisi is not None else "")
+    payload = {"p_target_uuid": target_uuid, "p_limit": limit}
+    if partisi is not None:
+        payload["p_partisi"] = partisi
+        payload["p_jumlah_partisi"] = jumlah_partisi
     req = urllib.request.Request(
         url + f"/rest/v1/rpc/{_rpc}",
-        data=json.dumps({"p_target_uuid": target_uuid,
-                         "p_limit": limit}).encode("utf-8"),
+        data=json.dumps(payload).encode("utf-8"),
         headers={"apikey": key, "Authorization": "Bearer " + key,
                  "Content-Type": "application/json"},
         method="POST")
