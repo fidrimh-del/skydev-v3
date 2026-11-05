@@ -6,12 +6,63 @@ import time
 import urllib3
 import random
 import os
+import urllib.request
 import asyncio
 import aiofiles
 from collections import OrderedDict
 from curl_cffi.requests import AsyncSession
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+VERSION = "1.94.0"
+GAME_PROTOCOL = "1.94.0"
+
+
+def get_panel_versions():
+    """(game_version, protocol_version) dari tabel app_settings di DB
+    panel (diubah dari dashboard, tanpa edit GitHub). Kembalikan
+    (None, None) bila env/tabel tak tersedia — pemanggil memakai nilai
+    bawaan (job tetap jalan, tidak mati)."""
+    url = (os.getenv("PANEL_SUPABASE_URL")
+           or os.getenv("SUPABASE_URL", "")).rstrip("/")
+    key = (os.getenv("PANEL_SUPABASE_SERVICE_KEY")
+           or os.getenv("SUPABASE_SERVICE_KEY", ""))
+    if not url or not key:
+        return None, None
+    try:
+        req = urllib.request.Request(
+            url + "/rest/v1/app_settings?select=key,value"
+            "&key=in.(game_version,protocol_version)",
+            headers={"apikey": key, "Authorization": "Bearer " + key},
+            method="GET")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            rows = json.loads(r.read().decode("utf-8"))
+        gv = pv = None
+        for row in rows or []:
+            v = (row.get("value") or "").strip() or None
+            if row.get("key") == "game_version":
+                gv = v
+            elif row.get("key") == "protocol_version":
+                pv = v
+        return gv, pv
+    except Exception as e:
+        print(f"[!] Baca app_settings gagal ({e}) -> pakai versi bawaan "
+              f"({VERSION}/{GAME_PROTOCOL}).")
+        return None, None
+
+
+def apply_panel_versions():
+    """Terapkan versi dari DB panel (bila ada) ke modul ini. Kembalikan
+    (VERSION, GAME_PROTOCOL) yang aktif. Dipanggil sekali di awal main()."""
+    global GAME_PROTOCOL, VERSION
+    gv, pv = get_panel_versions()
+    if gv:
+        VERSION = gv
+    if pv:
+        GAME_PROTOCOL = pv
+    print(f"[*] Versi aktif: game={VERSION} protokol={GAME_PROTOCOL}")
+    return VERSION, GAME_PROTOCOL
 
 # ==========================================
 # FUNGSI PENGECEK JWT (0 Detik / Tanpa Internet)
@@ -35,8 +86,8 @@ class PKXDSkydevLoginGithub:
         self.lobby_url = "https://pkxd-lobby.aftvrsys.com"
         self.app_key = "57a3d999-654c-4484-a20c-0f4b5512af49"
         self.app_secret = "jWS5aLZacNVFx6PAxpXq2g4o" 
-        self.version = "1.91.4"
-        self.game_protocol = "1.91.0" 
+        self.version = VERSION
+        self.game_protocol = GAME_PROTOCOL
         self.impersonate_targets = ["chrome110", "chrome116", "safari15_5"]
         
         self.headers_base = {
@@ -178,6 +229,8 @@ async def main():
     print(f"[*] Menemukan {len(accounts_list)} akun di dalam Gudang List.")
     print(f"[*] Menemukan {len(current_sessions)} data sesi di ActiveSessions.")
     
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
     engine = PKXDSkydevLoginGithub()
     
     # Batas aman paralel untuk single runner agar tidak memicu deteksi DDoS PKXD

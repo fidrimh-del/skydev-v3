@@ -286,6 +286,9 @@ def _run_bot(args):
 
 
 def main():
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    L.apply_panel_versions()
     target = sys.argv[1] if len(sys.argv) > 1 else (
         "aae2efe1-1abb-48c2-8799-ea192692a49c")
     jumlah = int(sys.argv[2]) if len(sys.argv) > 2 else 50

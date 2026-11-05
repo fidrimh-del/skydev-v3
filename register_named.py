@@ -55,14 +55,15 @@ import string
 import struct
 import sys
 import time
+import urllib.request
 from collections import OrderedDict
 
 from curl_cffi.requests import AsyncSession
 
 ACCOUNT_URL = "https://account.faster.aftvrsys.com"
 LOBBY_URL = "https://pkxd-lobby.aftvrsys.com"
-VERSION = "1.93.4"
-GAME_PROTOCOL = "1.93.0"
+VERSION = "1.94.0"
+GAME_PROTOCOL = "1.94.0"
 
 APP_KEY = os.getenv("FSTR_APP_KEY") or "57a3d999-654c-4484-a20c-0f4b5512af49"
 APP_SECRET = os.getenv("FSTR_APP_SECRET") or "jWS5aLZacNVFx6PAxpXq2g4o"
@@ -77,6 +78,52 @@ HEADERS_BASE = {
     "X-Unity-Version": "2022.3.62f3",
     "Connection": "keep-alive",
 }
+
+
+def get_panel_versions():
+    """(game_version, protocol_version) dari tabel app_settings di DB
+    panel (diubah dari dashboard, tanpa edit GitHub). Kembalikan
+    (None, None) bila env/tabel tak tersedia — pemanggil memakai nilai
+    bawaan (job tetap jalan, tidak mati)."""
+    url = (os.getenv("PANEL_SUPABASE_URL")
+           or os.getenv("SUPABASE_URL", "")).rstrip("/")
+    key = (os.getenv("PANEL_SUPABASE_SERVICE_KEY")
+           or os.getenv("SUPABASE_SERVICE_KEY", ""))
+    if not url or not key:
+        return None, None
+    try:
+        req = urllib.request.Request(
+            url + "/rest/v1/app_settings?select=key,value"
+            "&key=in.(game_version,protocol_version)",
+            headers={"apikey": key, "Authorization": "Bearer " + key},
+            method="GET")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            rows = json.loads(r.read().decode("utf-8"))
+        gv = pv = None
+        for row in rows or []:
+            v = (row.get("value") or "").strip() or None
+            if row.get("key") == "game_version":
+                gv = v
+            elif row.get("key") == "protocol_version":
+                pv = v
+        return gv, pv
+    except Exception as e:
+        print(f"[!] Baca app_settings gagal ({e}) -> pakai versi bawaan "
+              f"({VERSION}/{GAME_PROTOCOL}).")
+        return None, None
+
+
+def apply_panel_versions():
+    """Terapkan versi dari DB panel (bila ada) ke modul ini. Kembalikan
+    (VERSION, GAME_PROTOCOL) yang aktif. Dipanggil sekali di awal main()."""
+    global GAME_PROTOCOL, VERSION
+    gv, pv = get_panel_versions()
+    if gv:
+        VERSION = gv
+    if pv:
+        GAME_PROTOCOL = pv
+    print(f"[*] Versi aktif: game={VERSION} protokol={GAME_PROTOCOL}")
+    return VERSION, GAME_PROTOCOL
 
 
 def log(msg):
@@ -1168,6 +1215,9 @@ async def main():
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("[!] SUPABASE_URL / SUPABASE_SERVICE_KEY belum diset.")
         sys.exit(1)
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    apply_panel_versions()
     all_names = []
     if name_mode == "list":
         all_names = load_custom_names()

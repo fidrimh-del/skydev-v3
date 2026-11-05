@@ -281,6 +281,9 @@ async def main_async(activity_id, jumlah, durasi_menit, bot_type):
 
 
 def main():
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    L.apply_panel_versions()
     activity_id = (sys.argv[1] if len(sys.argv) > 1
                    else os.getenv("ACTIVITY_ID", ""))
     if not activity_id:

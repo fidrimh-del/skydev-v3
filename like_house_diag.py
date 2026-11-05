@@ -218,6 +218,9 @@ def _worker(args):
 
 
 def main():
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    L.apply_panel_versions()
     target_uuid = sys.argv[1]
     jumlah = int(sys.argv[2]) if len(sys.argv) > 2 else 50
     max_paralel = int(sys.argv[3]) if len(sys.argv) > 3 else 50

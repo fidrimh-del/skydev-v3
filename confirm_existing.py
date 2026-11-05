@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 # Import dari register_named
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from register_named import (
-    tcp_get_nickname, email_login_jwt, log,
+    tcp_get_nickname, email_login_jwt, log, apply_panel_versions,
     SUPABASE_URL, SUPABASE_KEY, TABEL
 )
 from curl_cffi.requests import AsyncSession
@@ -67,6 +67,9 @@ async def main():
     workers = int(os.getenv("WORKERS", "10"))
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("[!] SUPABASE_URL / SUPABASE_SERVICE_KEY belum diset."); sys.exit(1)
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    apply_panel_versions()
     bots = sb_get_bots(batas)
     # Filter: hanya yang nickname-nya tidak ada # (belum terkonfirmasi)
     bots = [b for b in bots if not (b.get("nickname") and "#" in b["nickname"])]

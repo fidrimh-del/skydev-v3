@@ -296,6 +296,9 @@ async def like_house_once(session, bot, target_uuid):
 async def main():
     P.VERBOSE = True  # probe manual selalu detail
     L.QUIET = False
+    # Versi game/protokol dari panel (tabel app_settings); fallback
+    # bawaan bila tak tersedia — job tetap jalan.
+    L.apply_panel_versions()
     target = (sys.argv[1] if len(sys.argv) > 1 else
               os.getenv("TARGET_UUID", TARGET_DEFAULT))
     print(f"[*] Target like RUMAH (UUID pemilik): {target}")
