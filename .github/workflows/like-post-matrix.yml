@@ -1,0 +1,104 @@
+# SKYDEV Post Matrix (Paralel) — kirim like postingan via N runner
+# paralel, masing-masing dengan partisi bot sendiri (rotasi IP).
+#
+# Masalah yang dipecahkan: satu run = satu runner = satu IP = satu
+# jatah gate alokasi (~120). Satu postingan 150 like dalam satu run
+# mentok di ~128 (terbukti 5 Nov 2026: post da4b93 128/150).
+# Matrix memecah bot per postingan menjadi leg-leg kecil (<=100 bot
+# per leg, di bawah jatah terkecil yang teramati) yang jalan SERENTAK
+# di runner berbeda — tiap leg = IP berbeda = jatah gate sendiri.
+# Tiap leg memproses SEMUA postingan dalam daftar, tapi hanya dengan
+# partisi bot-nya sendiri.
+#
+# Cara partisi (tanpa offset, tanpa fetch terpusat): tiap leg memakai
+# RPC _part (get_fresh_like_bots_part / get_fresh_named_like_bots_part)
+# dengan p_partisi = nomor leg dan p_jumlah_partisi = jumlah leg.
+# Partisi = hash email modulo N, jadi tiap bot jatuh ke TEPAT SATU
+# partisi (terbukti disjoin di SQL) apa pun ORDER BY-nya — leg tidak
+# berebut bot yang sama.
+#
+# Aturan leg: legs = min(ceil(jumlah_bot/100), 100);
+# tiap leg mengirim jumlah_leg = ceil(jumlah_bot/legs) PER POSTINGAN.
+# Cap 100 leg karena paket like post toko sampai 5000 per postingan
+# (5000/100 = 50 leg). Melebihi batas job bersamaan akun, leg-leg
+# sisanya MENGANTRE lalu jalan saat ada slot kosong; tiap leg tetap
+# <=100 bot di runner-nya sendiri.
+#
+# CATATAN: matrix TIDAK memperbaiki postingan yang 0/150 karena
+# ID-nya tidak valid (terbukti 5 Nov 2026: 4 postingan 0/150 dengan
+# bot segar tersedia — kegagalan per-postingan, bukan per-bot).
+# Pastikan ID postingan valid sebelum dispatch matrix.
+#
+# TIDAK ADA langkah sapu di workflow ini — log tiap leg harus tetap
+# ada untuk diagnosis (pelajaran 5 Nov: langkah sapu di follow_bot.yml
+# / like_bot.yml menghapus run lain se-repo).
+#
+# Status run: GitHub mengagregasi — run sukses hanya bila SEMUA leg
+# sukses (fail-fast: false, jadi satu leg yang mentok tidak
+# membatalkan leg lain). Penilaian tetap dari log tiap leg + delta
+# DB, bukan dari status run semata.
+#
+# Dipanggil dari dashboard panel (toggle "Matrix paralel", kartu Like
+# Post) lewat executeAndWait yang sama, atau dispatch manual dari
+# GitHub. Workflow ini HANYA mode LIKE (mode GET tetap di like_bot.yml).
+# Prasyarat: Secrets yang sama dengan like_bot.yml.
+name: SKYDEV Post Matrix (Paralel)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Operasi: GET (Ambil Data) atau LIKE (Eksekusi)"
+        required: false
+        default: "LIKE"
+      target_data:
+        description: "Kumpulan Post ID (LIKE), dipisah koma"
+        required: true
+      jumlah_bot:
+        description: "Jumlah Bot per postingan (total)"
+        required: false
+        default: "50"
+      bot_type:
+        description: "Tipe bot: accounts atau named_bots"
+        required: false
+        default: "accounts"
+jobs:
+  siapkan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      partisi: ${{ steps.hitung.outputs.partisi }}
+      jumlah_leg: ${{ steps.hitung.outputs.jumlah_leg }}
+      legs: ${{ steps.hitung.outputs.legs }}
+    steps:
+      - id: hitung
+        run: |
+          python3 - <<'EOF'
+          import json, math, os
+          jumlah = int("${{ inputs.jumlah_bot }}")
+          legs = max(1, min(math.ceil(jumlah / 100), 100))
+          jumlah_leg = math.ceil(jumlah / legs)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"partisi={json.dumps(list(range(legs)))}\n")
+              f.write(f"jumlah_leg={jumlah_leg}\n")
+              f.write(f"legs={legs}\n")
+          print(f"jumlah={jumlah} legs={legs} jumlah_leg={jumlah_leg}")
+          EOF
+  operasi_postingan:
+    needs: siapkan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        partisi: ${{ fromJSON(needs.siapkan.outputs.partisi) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - run: pip install curl_cffi==0.16.0 requests==2.34.2 typing_extensions==4.16.0
+      - run: python -u like_cloud.py LIKE "${{ inputs.target_data }}" "${{ needs.siapkan.outputs.jumlah_leg }}" "${{ matrix.partisi }}" "${{ needs.siapkan.outputs.legs }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BOT_TYPE: ${{ inputs.bot_type }}
