@@ -1,0 +1,97 @@
+# SKYDEV Like Profil Matrix (Paralel) — kirim like profil via N runner
+# paralel, masing-masing dengan partisi bot sendiri (rotasi IP).
+#
+# Masalah yang dipecahkan: satu run = satu runner = satu IP = satu
+# jatah gate alokasi (~120-172). Order 500 dalam satu run mentok di
+# jatah itu lalu gagal massal. Matrix memecah order menjadi leg-leg
+# kecil (<=100 bot per leg, di bawah jatah terkecil yang teramati)
+# yang jalan SERENTAK di runner berbeda — tiap leg = IP berbeda =
+# jatah gate sendiri. Tidak seperti chunking panel (sekuensial),
+# semua leg start dalam satu jendela antre yang sama.
+#
+# Cara partisi (tanpa offset, tanpa fetch terpusat): tiap leg memakai
+# RPC _part (get_fresh_*_part) dengan p_partisi = nomor leg dan
+# p_jumlah_partisi = jumlah leg. Partisi = hash email modulo N,
+# jadi tiap bot jatuh ke TEPAT SATU partisi (terbukti disjoin di SQL)
+# apa pun ORDER BY-nya — leg tidak berebut bot yang sama.
+#
+# Aturan leg: legs = min(ceil(jumlah/100), 20); tiap leg mengirim
+# jumlah_leg = ceil(jumlah/legs). Order toko maks 1000 -> maks 10 leg
+# @ 100 bot. Order >2000 akan melebihi 100 bot/leg (cap 20 leg) —
+# di luar jangkauan desain ini, jangan dipakai untuk order >2000.
+#
+# Overshoot: tiap leg punya overshoot sendiri (~in-flight worker,
+# ~19 pada paralel 20), jadi total terkirim ≈ jumlah + 19*legs
+# (mis. 500 = 5 leg -> ~500-595). Ini diterima, sama seperti
+# overshoot chunking dulu (200 -> 238).
+#
+# Status run: GitHub mengagregasi — run sukses hanya bila SEMUA leg
+# sukses (fail-fast: false, jadi satu leg yang mentok tidak
+# membatalkan leg lain). Penilaian tetap dari log tiap leg + delta
+# DB, bukan dari status run semata (pelajaran 4 Nov: status bisa basi).
+#
+# Dipanggil dari dashboard panel (toggle "Matrix paralel", tab Like)
+# lewat executeAndWait yang sama, atau dispatch manual dari GitHub.
+# Prasyarat: Secrets yang sama dengan like-profile.yml.
+name: SKYDEV Like Profil Matrix (Paralel)
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target: UUID atau Nama#Kode"
+        required: true
+      jumlah:
+        description: "Jumlah like baru yang diminta (total)"
+        required: true
+        default: "500"
+      max_paralel:
+        description: "Worker bersamaan per leg (maks 50)"
+        required: false
+        default: "20"
+      bot_type:
+        description: "Tipe bot: accounts atau named_bots"
+        required: false
+        default: "accounts"
+jobs:
+  siapkan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      partisi: ${{ steps.hitung.outputs.partisi }}
+      jumlah_leg: ${{ steps.hitung.outputs.jumlah_leg }}
+      legs: ${{ steps.hitung.outputs.legs }}
+    steps:
+      - id: hitung
+        run: |
+          python3 - <<'EOF'
+          import json, math, os
+          jumlah = int("${{ inputs.jumlah }}")
+          legs = max(1, min(math.ceil(jumlah / 100), 20))
+          jumlah_leg = math.ceil(jumlah / legs)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"partisi={json.dumps(list(range(legs)))}\n")
+              f.write(f"jumlah_leg={jumlah_leg}\n")
+              f.write(f"legs={legs}\n")
+          print(f"jumlah={jumlah} legs={legs} jumlah_leg={jumlah_leg}")
+          EOF
+  like_profil:
+    needs: siapkan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        partisi: ${{ fromJSON(needs.siapkan.outputs.partisi) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u like_profile_cloud.py "${{ inputs.target }}" "${{ needs.siapkan.outputs.jumlah_leg }}" "${{ inputs.max_paralel }}" "${{ matrix.partisi }}" "${{ needs.siapkan.outputs.legs }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BOT_TYPE: ${{ inputs.bot_type }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
