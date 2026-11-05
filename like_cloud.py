@@ -176,8 +176,10 @@ async def sb_upsert_youni_posts(session_http, target_uid, posts_data):
     except Exception as e:
         print(f"[-] Gagal push Youni Posts ke Supabase: {e}")
 
-async def sb_get_fresh_like_bots(session_http, post_id, limit):
+async def sb_get_fresh_like_bots(session_http, post_id, limit, partisi=None, jumlah_partisi=None):
     _rpc = "get_fresh_named_like_bots" if os.getenv("BOT_TYPE", "accounts") == "named_bots" else "get_fresh_like_bots"
+    if partisi is not None:
+        _rpc += "_part"
     endpoint = f"{SUPABASE_URL}/rest/v1/rpc/{_rpc}"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -185,6 +187,9 @@ async def sb_get_fresh_like_bots(session_http, post_id, limit):
         "Content-Type": "application/json"
     }
     payload = {"p_post_id": post_id, "p_limit": limit}
+    if partisi is not None:
+        payload["p_partisi"] = partisi
+        payload["p_jumlah_partisi"] = jumlah_partisi
     try:
         r = await session_http.post(endpoint, json=payload, headers=headers, timeout=20)
         if r.status_code == 200: return r.json()
@@ -293,6 +298,21 @@ async def main():
     elif mode == "LIKE":
         post_ids_raw = sys.argv[2].strip()
         jumlah_order = int(sys.argv[3].strip())
+
+        # Argumen matrix (opsional, harus sepasang): partisi + jumlah_partisi.
+        # Bila diisi, bot diambil via RPC _part (tanpa fallback jalur lama).
+        partisi = None
+        jumlah_partisi = None
+        if len(sys.argv) > 4:
+            if len(sys.argv) != 6:
+                print("[!] Format Error! Mode matrix butuh 2 argumen tambahan: <PARTISI> <JUMLAH_PARTISI>")
+                sys.exit(1)
+            partisi = int(sys.argv[4].strip())
+            jumlah_partisi = int(sys.argv[5].strip())
+            if jumlah_partisi < 1 or partisi < 0 or partisi >= jumlah_partisi:
+                print("[!] Format Error! Partisi harus 0 <= PARTISI < JUMLAH_PARTISI.")
+                sys.exit(1)
+            print(f"[*] Mode matrix: partisi {partisi}/{jumlah_partisi} (RPC _part, tanpa fallback jalur lama).")
         
         target_posts = [p for p in post_ids_raw.split(',') if p.strip()]
         semaphore = asyncio.Semaphore(150)
@@ -302,7 +322,7 @@ async def main():
                 print(f"\n[*] --- Memulai Operasi Like Postingan: {p_id} ---")
                 
                 # Tarik bot yang belum pernah like postingan ini
-                bots = await sb_get_fresh_like_bots(session_http, p_id, jumlah_order)
+                bots = await sb_get_fresh_like_bots(session_http, p_id, jumlah_order, partisi, jumlah_partisi)
                 
                 if not bots:
                     print(f"[!] Stok bot habis atau semua bot sudah me-like postingan ini. SKIP!")
