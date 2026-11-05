@@ -230,7 +230,7 @@ async def resolve_name(name, bot):
 
 # ---------------------------------------------------------------- worker per bot
 async def bot_coro(bot, target_uuid):
-    """Satu bot: maks 2 instance. Kembalikan 'sent' / 'already' /
+    """Satu bot: maks 3 instance. Kembalikan 'sent' / 'already' /
     'fail' / 'fail-noanswer' (tidak satu pun jawaban IsThere di semua
     instance — bot ini tidak ikut ronde retry: mengulang mereka hanya
     buang waktu)."""
@@ -240,7 +240,7 @@ async def bot_coro(bot, target_uuid):
     prof = random.choice(("chrome110", "chrome116", "safari15_5"))
     async with L.AsyncSession(impersonate=prof,
                               verify=False) as session:
-        for attempt in range(1, 3):
+        for attempt in range(1, 4):
             res = await H.like_house_once(session, bot, target_uuid)
             if res is None:
                 continue  # instance gagal -> alokasi ulang
