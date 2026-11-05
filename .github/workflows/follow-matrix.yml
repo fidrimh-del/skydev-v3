@@ -1,0 +1,98 @@
+# SKYDEV Follow Matrix (Paralel) — kirim follow via N runner paralel,
+# masing-masing dengan partisi bot sendiri (rotasi IP).
+#
+# Masalah yang dipecahkan: satu run = satu runner = satu IP = satu
+# jatah gate alokasi (~120). Order 1000 dalam satu run mentok di ~122
+# lalu gagal massal (terbukti 5 Nov 2026: 122/1000 ke f08ba1ba).
+# Matrix memecah order menjadi leg-leg kecil (<=100 bot per leg,
+# di bawah jatah terkecil yang teramati) yang jalan SERENTAK di
+# runner berbeda — tiap leg = IP berbeda = jatah gate sendiri.
+#
+# Cara partisi (tanpa offset, tanpa fetch terpusat): tiap leg memakai
+# RPC _part (get_fresh_bots_part / get_fresh_named_bots_part) dengan
+# p_partisi = nomor leg dan p_jumlah_partisi = jumlah leg. Partisi =
+# hash email modulo N, jadi tiap bot jatuh ke TEPAT SATU partisi
+# (terbukti disjoin di SQL) apa pun ORDER BY-nya — leg tidak berebut
+# bot yang sama.
+#
+# Aturan leg: legs = min(ceil(jumlah_order/100), 100);
+# tiap leg mengirim jumlah_leg = ceil(jumlah_order/legs).
+# Cap 100 leg (bukan 20 seperti matrix like profil) karena paket
+# follow toko sampai 10000 — 10000/100 = 100 leg. Melebihi batas
+# job bersamaan akun, leg-leg sisanya MENGANTRE lalu jalan saat ada
+# slot kosong; tiap leg tetap <=100 bot di runner-nya sendiri.
+# Catatan biaya: tiap leg memakai ~1 menit setup runner
+# (checkout + python + pip), jadi order 10000 ~100 menit Actions.
+#
+# Overshoot: follow tidak punya overshoot seperti like profil/rumah
+# (tiap bot dicoba sekali, tanpa ronde top-up) — total terkirim
+# ≈ jumlah yang diminta bila tiap leg bersih.
+#
+# TIDAK ADA langkah sapu di workflow ini — log tiap leg harus tetap
+# ada untuk diagnosis (pelajaran 5 Nov: langkah sapu di follow_bot.yml
+# / like_bot.yml menghapus run lain se-repo).
+#
+# Status run: GitHub mengagregasi — run sukses hanya bila SEMUA leg
+# sukses (fail-fast: false, jadi satu leg yang mentok tidak
+# membatalkan leg lain). Penilaian tetap dari log tiap leg + delta
+# DB, bukan dari status run semata.
+#
+# Dipanggil dari dashboard panel (toggle "Matrix paralel", kartu Follow)
+# lewat executeAndWait yang sama, atau dispatch manual dari GitHub.
+# Prasyarat: Secrets yang sama dengan follow_bot.yml.
+name: SKYDEV Follow Matrix (Paralel)
+on:
+  workflow_dispatch:
+    inputs:
+      target_uuid:
+        description: "UUID Target"
+        required: true
+      jumlah_order:
+        description: "Jumlah Follower (total)"
+        required: true
+        default: "100"
+      bot_type:
+        description: "Tipe bot: accounts atau named_bots"
+        required: false
+        default: "accounts"
+jobs:
+  siapkan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      partisi: ${{ steps.hitung.outputs.partisi }}
+      jumlah_leg: ${{ steps.hitung.outputs.jumlah_leg }}
+      legs: ${{ steps.hitung.outputs.legs }}
+    steps:
+      - id: hitung
+        run: |
+          python3 - <<'EOF'
+          import json, math, os
+          jumlah = int("${{ inputs.jumlah_order }}")
+          legs = max(1, min(math.ceil(jumlah / 100), 100))
+          jumlah_leg = math.ceil(jumlah / legs)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"partisi={json.dumps(list(range(legs)))}\n")
+              f.write(f"jumlah_leg={jumlah_leg}\n")
+              f.write(f"legs={legs}\n")
+          print(f"jumlah={jumlah} legs={legs} jumlah_leg={jumlah_leg}")
+          EOF
+  suntik_follow:
+    needs: siapkan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        partisi: ${{ fromJSON(needs.siapkan.outputs.partisi) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - run: pip install curl_cffi==0.16.0 requests==2.34.2 typing_extensions==4.16.0
+      - run: python -u follow_cloud.py "${{ inputs.target_uuid }}" "${{ needs.siapkan.outputs.jumlah_leg }}" "${{ matrix.partisi }}" "${{ needs.siapkan.outputs.legs }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BOT_TYPE: ${{ inputs.bot_type }}
