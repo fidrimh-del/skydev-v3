@@ -119,8 +119,10 @@ def clamp_paralel(n, default=50):
 
 
 def parse_args(argv):
-    """argv[1] = target, argv[2] = jumlah, argv[3] = max_paralel (opsional).
-    Kembalikan (target, jumlah, max_paralel) atau None kalau tidak sah."""
+    """argv[1] = target, argv[2] = jumlah, argv[3] = max_paralel (opsional),
+    argv[4] = partisi, argv[5] = jumlah_partisi (keduanya opsional,
+    harus sepasang: mode matrix). Kembalikan (target, jumlah,
+    max_paralel, partisi, jumlah_partisi) atau None kalau tidak sah."""
     if len(argv) < 3:
         return None
     target = argv[1].strip()
@@ -131,7 +133,19 @@ def parse_args(argv):
     if not target or jumlah < 1:
         return None
     max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 50)
-    return target, jumlah, max_paralel
+    partisi = jumlah_partisi = None
+    if len(argv) > 4:
+        if len(argv) < 6:
+            return None
+        try:
+            partisi = int(argv[4])
+            jumlah_partisi = int(argv[5])
+        except ValueError:
+            return None
+        if (jumlah_partisi < 1 or partisi < 0
+                or partisi >= jumlah_partisi):
+            return None
+    return target, jumlah, max_paralel, partisi, jumlah_partisi
 
 
 def decide_exit(sent, jumlah):
@@ -216,7 +230,7 @@ async def resolve_name(name, bot):
 
 # ---------------------------------------------------------------- worker per bot
 async def bot_coro(bot, target_uuid):
-    """Satu bot: maks 2 instance. Kembalikan 'sent' / 'already' /
+    """Satu bot: maks 3 instance. Kembalikan 'sent' / 'already' /
     'fail' / 'fail-noanswer' (tidak satu pun jawaban IsThere di semua
     instance — bot ini tidak ikut ronde retry: mengulang mereka hanya
     buang waktu)."""
@@ -226,7 +240,7 @@ async def bot_coro(bot, target_uuid):
     prof = random.choice(("chrome110", "chrome116", "safari15_5"))
     async with L.AsyncSession(impersonate=prof,
                               verify=False) as session:
-        for attempt in range(1, 3):
+        for attempt in range(1, 4):
             res = await H.like_house_once(session, bot, target_uuid)
             if res is None:
                 continue  # instance gagal -> alokasi ulang
@@ -310,11 +324,13 @@ def main():
     parsed = parse_args(sys.argv)
     if parsed is None:
         print("Pakai: python like_house_cloud.py <TARGET> <JUMLAH> "
-              "[MAX_PARALEL]")
+              "[MAX_PARALEL] [PARTISI JUMLAH_PARTISI]")
         print("  TARGET = UUID pemilik rumah atau Nama#Kode; "
               "JUMLAH >= 1; MAX_PARALEL dijepit 1..50 (default 50).")
+        print("  PARTISI + JUMLAH_PARTISI = mode matrix (keduanya "
+              "wajib sepasang; tanpa keduanya = single-run).")
         return 1
-    target_in, jumlah, max_paralel = parsed
+    target_in, jumlah, max_paralel, partisi, jumlah_partisi = parsed
     # Versi game/protokol dari panel (tabel app_settings); fallback
     # bawaan bila tak tersedia — job tetap jalan.
     L.apply_panel_versions()
@@ -324,6 +340,9 @@ def main():
     t0 = time.time()
     print(f"[*] Like rumah: target={target_in} jumlah={jumlah} "
           f"paralel_maks={max_paralel}")
+    if partisi is not None:
+        print(f"[*] Mode matrix: partisi {partisi}/{jumlah_partisi} "
+              "(RPC _part, tanpa fallback jalur lama).")
 
     # 1. Daftar bot awal (untuk resolusi bila perlu).
     bots = P.get_bots(target_in, limit=10)
@@ -385,9 +404,11 @@ def main():
             break
         ronde += 1
         if pakai_rpc_baru:
-            pool = H.get_house_bots(target_uuid, limit=ambil_limit)
+            pool = H.get_house_bots(target_uuid, limit=ambil_limit,
+                                    partisi=partisi,
+                                    jumlah_partisi=jumlah_partisi)
             if not pool:
-                if ronde == 1:
+                if ronde == 1 and partisi is None:
                     cek_lama = P.get_bots(target_uuid, limit=10)
                     if cek_lama:
                         print("[!] RPC baru kosong tapi RPC lama ada "
