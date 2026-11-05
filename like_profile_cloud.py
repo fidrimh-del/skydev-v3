@@ -1,6 +1,7 @@
 """
 like_profile_cloud.py — Kirim like profil PK XD massal via TCP (produksi).
-Dilengkapi pelaporan titik gagal diagnostik eksak, pacing stagger, dan batch chunking.
+Versi stabil dengan chunking batch (maks 150 bot/ronde), pacing stagger,
+pelaporan error eksplisit, dan circuit-breaker proteksi overload antrean.
 """
 
 import sys
@@ -141,7 +142,8 @@ def run_bot(idx, bot, target_uuid, state):
             return "skip-target-met"
         state["tried"].add(bot["email"])
 
-    time.sleep(random.uniform(0.3, 1.8))
+    # Pacing bertingkat agar request login & alokasi tidak menumpuk serentak
+    time.sleep(random.uniform(0.6, 2.2))
     t0 = time.time()
     try:
         hasil = asyncio.run(bot_coro(bot, target_uuid))
@@ -172,12 +174,14 @@ def run_bot(idx, bot, target_uuid, state):
                 state["noanswer"].add(bot["email"])
             print(f"[!] Bot {idx}: {hasil} ({dt:.0f}d)")
 
+            # Circuit breaker: Jika 15 bot gagal beruntun, tunda antrean sejenak
             if state["consecutive_fails"] >= 15:
                 print("[!] Lonjakan kegagalan terdeteksi, cooldown antrean 10 detik...")
                 time.sleep(10)
                 state["consecutive_fails"] = 0
 
-    time.sleep(random.uniform(0.2, 0.6))
+    # Jeda singkat sebelum worker thread mengambil tugas berikutnya
+    time.sleep(random.uniform(0.3, 0.7))
     return hasil
 
 
@@ -249,6 +253,7 @@ def main():
             break
         ronde += 1
 
+        # Chunking: Ambil secukupnya sesuai sisa defisit, dijepit di rentang 50 - 150
         defisit = jumlah - state["sent"]
         ambil_limit = min(max(defisit + 30, 50), 150)
 
@@ -283,6 +288,7 @@ def main():
                 print("[*] RPC mengembalikan kurang dari limit — pool fresh habis.")
                 break
 
+            # Pendinginan sejenak antar-gelombang batch
             time.sleep(2.0)
 
         else:
@@ -306,6 +312,7 @@ def main():
             print(f"[*] RONDE {ronde} selesai: terkirim={state['sent']} gagal={len(state['failed_map'])}")
             time.sleep(2.0)
 
+    # Retry ronde terakhir untuk kegagalan transien (bukan noanswer/dead socket)
     if state["sent"] < jumlah and state["failed_map"]:
         retry = [b for e, b in state["failed_map"].items() if e not in state["noanswer"]]
         if retry:
