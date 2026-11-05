@@ -43,20 +43,6 @@ REPLENISHMENT (v3.2, pola like-post): selama terkirim < jumlah dan
   jumlah bila stok bot cukup — bukan persis jumlah (overshoot wave
   paralel tetap berlaku; kelebihan itu bonus, bukan kerugian).
 
-JEDA ANTAR GRUP (2026-11-05, 1 run + jeda 30 detik ke produksi):
-  jalankan_tugas membagi tugas jadi grup 100 bot dengan jeda 30
-  detik antar grup (satu run, satu runner) — jeda ini yang melewati
-  gate alokasi ~120 (bukti diag jeda: 30 detik -> 200/200 bersih,
-  0x429; 10 detik -> 10x429 di grup 2; 20 detik -> 43x429 di grup 2).
-  Grup pertama tanpa jeda sebelumnya, grup terakhir tanpa jeda
-  sesudahnya; bila target sudah terpenuhi, grup berikutnya tidak
-  diajukan (sama seperti tugas skip-target-met sebelumnya). Karena
-  batching ada di dalam run, panel HARUS dispatch SATU run dengan
-  jumlah penuh (chunking panel dihapus) — kalau panel tetap
-  memecah chunk, jeda internal tidak pernah terpicu untuk order
-  >100 (tiap chunk cuma 1 grup). Order <=100 berperilaku identik
-  seperti dulu (1 grup, tanpa jeda).
-
 KELUAR (exit code):
   - 0 = terkirim >= jumlah yang diminta.
   - 1 = terkirim < jumlah (stok bot fresh habis, gagal berulang,
@@ -278,49 +264,22 @@ def run_bot(idx, bot, target_uuid, state):
     return hasil
 
 
-# Jeda antar grup (terbukti diag jeda 2026-11-04/05): grup 100 bot,
-# jeda 30 detik antar grup, satu run satu runner. 10 detik -> 10x429,
-# 20 detik -> 43x429, 30 detik -> 0x429 (200/200).
-UKURAN_GRUP_JEDA = 100
-JEDA_ANTAR_GRUP_DETIK = 30
-
-
 def jalankan_tugas(tugas, target_uuid, state, max_paralel, nomor_awal):
-    """Jalankan daftar tugas di thread pool, dalam grup 100 bot
-    dengan jeda 30 detik antar grup (1 run, runner tunggal) — jeda
-    ini yang melewati gate alokasi ~120. Grup pertama tanpa jeda
-    sebelumnya, grup terakhir tanpa jeda sesudahnya. Bila target
-    sudah terpenuhi sebelum suatu grup diajukan, grup itu (dan
-    berikutnya) tidak diajukan — ekuivalen dengan tugas-tugas itu
-    mengembalikan skip-target-met seperti sebelumnya (mereka tidak
-    ditandai tried, tetap fresh untuk ronde/order berikut).
+    """Jalankan daftar tugas di thread pool; tunggu semua selesai.
     Kembalikan nomor tugas terakhir (penomoran berlanjut antar ronde
-    agar log 'Bot N' tidak berulang; hanya bot yang diajukan yang
-    mendapat nomor)."""
+    agar log 'Bot N' tidak berulang)."""
     nomor = nomor_awal
-    grups = [tugas[i:i + UKURAN_GRUP_JEDA]
-             for i in range(0, len(tugas), UKURAN_GRUP_JEDA)]
-    for gi, grup in enumerate(grups, 1):
-        with state["lock"]:
-            if state["sent"] >= state["jumlah"]:
-                break
-        if gi > 1:
-            print(f"[*] JEDA {JEDA_ANTAR_GRUP_DETIK} detik sebelum grup "
-                  f"{gi}/{len(grups)} (gate alokasi) ...")
-            time.sleep(JEDA_ANTAR_GRUP_DETIK)
-        print(f"[*] Grup {gi}/{len(grups)} jalan: {len(grup)} bot "
-              f"(paralel {max_paralel}).")
-        with ThreadPoolExecutor(max_workers=max_paralel) as pool:
-            futs = []
-            for bot in grup:
-                nomor += 1
-                futs.append(pool.submit(run_bot, nomor, bot, target_uuid,
-                                        state))
-            for f in futs:
-                try:
-                    f.result()
-                except Exception as e:
-                    print(f"[!] Tugas worker exception: {e}")
+    with ThreadPoolExecutor(max_workers=max_paralel) as pool:
+        futs = []
+        for bot in tugas:
+            nomor += 1
+            futs.append(pool.submit(run_bot, nomor, bot, target_uuid,
+                                    state))
+        for f in futs:
+            try:
+                f.result()
+            except Exception as e:
+                print(f"[!] Tugas worker exception: {e}")
     return nomor
 
 
