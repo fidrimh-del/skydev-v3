@@ -246,7 +246,15 @@ def tcp_connect(host, port):
 
 def tcp_join_only(s, gsid):
     """JoinRoom saja (dipakai kalau login tidak auto-join).
-    Kembalikan roomId atau None."""
+    Kembalikan roomId atau None.
+    FAIL-FAST (2026-10-28): sifat join adalah per-instance, bukan
+    per-room — instance yang sehat menerima suffix/room awal, instance
+    yang buruk menolak SEMUA room (terbukti: 10/10 gagal di satu
+    instance, lalu instance berikutnya langsung auto-join). Mencoba
+    11 room hanya membuang ~30 detik di instance mati. Jadi cukup
+    suffix + 4 room awal (maks 5 percobaan, ~15 detik); kalau semua
+    gagal, pemanggil langsung alokasi ulang ke instance baru — itulah
+    pemulihan yang terbukti, bukan memaksa instance yang menolak."""
     room_candidates = []
     suffix = None
     if "::" in gsid:
@@ -409,7 +417,12 @@ def read_frames(sock, seconds):
 
 
 def read_until(sock, pred, cap, slice_s=0.25):
-    """Baca sampai pred(frames) True atau cap detik habis."""
+    """Baca sampai pred(frames) True atau cap detik habis.
+    Sama seperti read_frames (termasuk auto-pong), tapi BERHENTI
+    SEGERA saat frame target tiba — jendela tetap lama selalu
+    dihabiskan penuh meski jawaban sudah tiba di 0,1-0,3 detik
+    (terbukti eksperimen skydev-test 2026-10-29: 27,2 -> 1,4 dtk).
+    Kembalikan (frames, closed, pongs, hit)."""
     deadline = time.time() + cap
     buf = bytearray()
     frames = []
@@ -484,32 +497,15 @@ async def login_and_allocate(email, password, device_id, session):
         return None, None
     qlog("[+] Login OK, JWT didapat.")
     await asyncio.sleep(random.uniform(0.1, 0.3))
-
-    # --- Allocation dengan Retry & Backoff saat Rate Limit ---
     p3 = {"userToken": user_jwt, "gameServerProtocolVersion": GAME_PROTOCOL, "isPrivate": False}
     b_p3 = json.dumps(p3, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-
-    body = None
-    for attempt in range(1, 4):
-        try:
-            r3 = await session.post(LOBBY_URL + "/lobby/allocation", data=b_p3,
-                                    headers=HEADERS_BASE.copy(), timeout=20)
-            qlog(f"[*] allocation status (attempt {attempt}): {r3.status_code}")
-            if r3.status_code == 200:
-                try:
-                    body = r3.json()
-                except Exception:
-                    body = {}
-                break
-            elif r3.status_code == 429:
-                qlog(f"[!] Lobby 429 Rate Limit (attempt {attempt}/3), jeda sejenak...")
-                await asyncio.sleep(random.uniform(2.5, 4.5))
-            else:
-                await asyncio.sleep(1.0)
-        except Exception as e:
-            qlog(f"[-] Request allocation error: {e}")
-            await asyncio.sleep(1.0)
-
+    r3 = await session.post(LOBBY_URL + "/lobby/allocation", data=b_p3,
+                            headers=HEADERS_BASE.copy(), timeout=20)
+    qlog(f"[*] allocation status: {r3.status_code}")
+    try:
+        body = r3.json()
+    except Exception:
+        body = {}
     return user_jwt, body
 
 
@@ -560,7 +556,8 @@ def resolve_name(argv):
 
 async def lookup_once(session, bot, name):
     """Satu percobaan penuh (login s.d. search). Kembalikan dict
-    hasil decode atau None."""
+    hasil decode atau None. Pemanggil yang mengulang kalau perlu
+    (standalone main: 3x, poller: 2x per order)."""
     user_jwt, alloc = await login_and_allocate(
         bot["email"], bot["password"], bot["device_id"], session)
     if not alloc:
@@ -583,8 +580,14 @@ async def lookup_once(session, bot, name):
         print(f"[-] Gagal kirim event login: {e}")
         s.close()
         return None
+    # SKIP-JOIN (2026-10-29, terbukti eksperimen skydev-test): search
+    # LANGSUNG sesudah login — server membalas SearchFriendRequest
+    # tanpa keanggotaan room. Join hanya fallback bila search langsung
+    # kosong (pengaman, bukan jalur utama lagi).
 
     def do_search():
+        """Kirim search, tunggu hasil (cap 12 dtk, early-exit).
+        Kembalikan (hit, closed)."""
         frame = build_room_event_varint("friends", build_search_protobuf(name))
         try:
             s.sendall(frame)
@@ -612,6 +615,8 @@ async def lookup_once(session, bot, name):
     print(f"[*] Cari: {name} ...")
     hit, closed = do_search()
     if hit is None and not closed:
+        # Fallback 1 (v2: server lambat cukup ditunggu): tunggu 6 dtk
+        # tanpa aksi — hasil pertama bisa tiba terlambat — lalu search ulang.
         print("[*] Search langsung kosong — fallback: tunggu 6 dtk lalu search ulang.")
         resp, closed, _ = read_frames(s, 6)
         for p in resp:
@@ -622,6 +627,7 @@ async def lookup_once(session, bot, name):
         if hit is None and not closed:
             hit, closed = do_search()
     if hit is None and not closed:
+        # Fallback 2: join dulu lalu search ulang (sesi yang sama).
         print("[*] Search masih kosong — fallback: join lalu search lagi.")
         resp, closed, pongs, _ = read_until(
             s, lambda fr: scan_login_window(fr)[1] is not None, 5)
@@ -629,6 +635,7 @@ async def lookup_once(session, bot, name):
         print(f"[*] Login: tbugv={'YA' if tbugv else 'tidak'}, "
               f"auto-join={'room ' + str(room) if room is not None else 'tidak'}")
         if not closed:
+            # Hasil search pertama bisa tiba terlambat selama jendela join.
             for p in resp:
                 dec = decode_search_result(p)
                 if dec is not None and dec["success"] and dec["uuid"]:
@@ -643,6 +650,7 @@ async def lookup_once(session, bot, name):
                 else:
                     print("[!] Join gagal di instance ini.")
     if hit is None and not closed:
+        # Fallback 3: friends-kosong dulu (ambil daftar), lalu search lagi.
         print("[*] Search masih kosong — fallback: friends-kosong lalu search lagi.")
         try:
             s.sendall(build_room_event_varint("friends", b""))
@@ -655,6 +663,9 @@ async def lookup_once(session, bot, name):
 
 
 def probe_bot():
+    """Akun bot lookup. Env Secrets menang; fallback hardcode atas
+    perintah pemilik (repo private) — hapus nilai hardcode saat
+    produksi dan pindah ke Secrets. TIDAK dicetak ke log."""
     return {
         "email": os.getenv("PROBE_EMAIL", "") or "pkxdshop.id@gmail.com",
         "password": os.getenv("PROBE_PASSWORD", "") or "Kontol@161",
