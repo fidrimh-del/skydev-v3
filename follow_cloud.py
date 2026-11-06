@@ -92,14 +92,19 @@ class PKXDSkydevFollowEngine:
 
             await asyncio.sleep(random.uniform(0.1, 0.3))
 
-            # 3. Lobby Allocation
+            # 3. Lobby Allocation (dengan Retry bila terkena rate limit 429)
             p3 = {"userToken": user_jwt, "gameServerProtocolVersion": self.game_protocol, "isPrivate": False}
             b_p3 = json.dumps(p3, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
             h3 = self.headers_base.copy()
             
-            r3 = await session.post(self.lobby_url + "/lobby/allocation", data=b_p3, headers=h3, timeout=20)
-            if r3.status_code in [200, 201]:
-                return user_jwt
+            for _ in range(3):
+                r3 = await session.post(self.lobby_url + "/lobby/allocation", data=b_p3, headers=h3, timeout=20)
+                if r3.status_code in [200, 201]:
+                    return user_jwt
+                elif r3.status_code == 429:
+                    await asyncio.sleep(random.uniform(2.0, 3.5))
+                else:
+                    await asyncio.sleep(1.0)
             return None
         except:
             return None
@@ -109,14 +114,14 @@ class PKXDSkydevFollowEngine:
         headers["Authorization"] = f"Bearer {jwt_token}"
         endpoint = f"{self.follow_url}/api/v1/follow/{target_uid}/follow"
         
-        for attempt in range(2):
+        for _ in range(3):
             try:
-                await asyncio.sleep(random.uniform(0.2, 0.6))
+                await asyncio.sleep(random.uniform(0.2, 0.5))
                 r = await session.post(endpoint, headers=headers, data=b"", timeout=15)
                 if r.status_code in [200, 201, 204]:
                     return True
                 elif r.status_code == 429:
-                    await asyncio.sleep(random.uniform(1.5, 3.0))
+                    await asyncio.sleep(random.uniform(2.0, 3.5))
             except:
                 await asyncio.sleep(0.5)
         return False
@@ -172,6 +177,9 @@ async def worker(engine, bot, target_uid, semaphore, success_list, total_target)
         if len(success_list) >= total_target:
             return
             
+        # Pacing acak antar-bot agar tidak serentak menembak
+        await asyncio.sleep(random.uniform(0.1, 0.8))
+        
         async with AsyncSession(impersonate=random.choice(engine.impersonate_targets), verify=False) as session:
             token = await engine.login_and_get_token(bot["email"], bot["password"], bot["device_id"], session)
             if token:
@@ -210,40 +218,41 @@ async def main():
 
     print(f"[*] SKYDEV V3 CLOUD: Memulai target {target_uuid[:8]} (Total Pesanan: {jumlah_order})...")
 
-    semaphore = asyncio.Semaphore(20)
+    # Semaphore 25: ritme stabil tanpa memicu lock limit server
+    semaphore = asyncio.Semaphore(25)
     all_success = []
-    tried_emails = set()
     ronde = 0
+    maks_ronde = 4
 
-    while len(all_success) < jumlah_order:
+    while len(all_success) < jumlah_order and ronde < maks_ronde:
         ronde += 1
         defisit = jumlah_order - len(all_success)
         
-        buffer = max(int(defisit * 0.25), 15)
+        # Ambil defisit + buffer 30%
+        buffer = max(int(defisit * 0.3), 15)
         ambil_limit = defisit + buffer
 
         async with AsyncSession(verify=False) as session_http:
             bots_pool = await fetch_available_bots(session_http, target_uuid, ambil_limit, partisi, jumlah_partisi)
 
-        bots = [b for b in bots_pool if b.get("email") not in tried_emails]
+        # Saring bot yang SUDAH SUKSES follow (bot yang gagal diizinkan dicoba lagi di ronde baru)
+        bots = [b for b in bots_pool if b.get("email") not in all_success]
         if not bots:
             print(f"\n[-] STOK HABIS: Tidak ada lagi bot fresh di database (Terkirim: {len(all_success)}).")
             break
 
-        for b in bots:
-            tried_emails.add(b["email"])
-
-        print(f"\n[*] RONDE {ronde}: Menjalankan {len(bots)} bot (Kekurangan saat ini: {defisit})...")
+        print(f"\n[*] RONDE {ronde}: Menjalankan {len(bots)} bot (Target sisa: {defisit})...")
         
         tasks = [asyncio.create_task(worker(engine, bot, target_uuid, semaphore, all_success, jumlah_order)) for bot in bots]
         await asyncio.gather(*tasks)
 
+        # Simpan histori bot yang berhasil
         async with AsyncSession(verify=False) as session_http:
             await record_history(session_http, target_uuid, all_success)
 
         if len(all_success) < jumlah_order:
-            print(f"\n[*] Target belum penuh ({len(all_success)}/{jumlah_order}), pendinginan 5 detik sebelum lanjut...")
-            await asyncio.sleep(5.0)
+            print(f"\n[*] Target belum penuh ({len(all_success)}/{jumlah_order}), jeda pendinginan 6 detik...")
+            await asyncio.sleep(6.0)
 
     print(f"\n\n================================================")
     print(f"[+] PROSES SELESAI! Total Berhasil Follow: {len(all_success)}/{jumlah_order}")
