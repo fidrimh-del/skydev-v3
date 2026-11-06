@@ -15,10 +15,10 @@
 # jadi tiap bot jatuh ke TEPAT SATU partisi (terbukti disjoin di SQL)
 # apa pun ORDER BY-nya — leg tidak berebut bot yang sama.
 #
-# Aturan leg: legs = min(ceil(jumlah/100), 20); tiap leg mengirim
-# jumlah_leg = ceil(jumlah/legs). Order toko maks 1000 -> maks 10 leg
-# @ 100 bot. Order >2000 akan melebihi 100 bot/leg (cap 20 leg) —
-# di luar jangkauan desain ini, jangan dipakai untuk order >2000.
+# Aturan leg: legs = min(ceil(jumlah/50), 256); tiap leg mengirim
+# jumlah_leg = ceil(jumlah/legs). Order toko maks 1000 -> maks 20 leg
+# @ 50 bot. Order >12800 akan melebihi 50 bot/leg (cap 256 leg) —
+# di luar jangkauan desain ini, jangan dipakai untuk order >12800.
 #
 # Overshoot: tiap leg punya overshoot sendiri (~in-flight worker,
 # ~19 pada paralel 20), jadi total terkirim ≈ jumlah + 19*legs
@@ -66,7 +66,7 @@ jobs:
           python3 - <<'EOF'
           import json, math, os
           jumlah = int("${{ inputs.jumlah }}")
-          legs = max(1, min(math.ceil(jumlah / 50), 100))
+          legs = max(1, min(math.ceil(jumlah / 50), 256))
           jumlah_leg = math.ceil(jumlah / legs)
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"partisi={json.dumps(list(range(legs)))}\n")
