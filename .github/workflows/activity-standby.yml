@@ -1,12 +1,7 @@
-# SKYDEV Activity Standby (TEST REPO ONLY — bukan skydev-v3).
-# Uji coba: bot online & muncul di world UGC/builder (activity),
-# Script di folder test-activity/ (folder khusus tes di skydev-v3).
-# lalu tahan koneksi selama durasi agar terlihat di dalam world.
-# TIDAK menulis histori apa pun — bot tidak terpakai.
-# Prasyarat: Secrets skydev-test SUPABASE_URL + SUPABASE_SERVICE_KEY
-# (DB PANEL, sama seperti skydev-v3) + FSTR_APP_KEY/FSTR_APP_SECRET
-# (boleh kosong -> fallback di lookup_uuid.py).
-name: SKYDEV Activity Standby (Test)
+# SKYDEV Activity Standby Matrix (Paralel)
+# Memecah bot standby ke beberapa runner paralel (maksimal 15 bot per runner/IP)
+# agar koneksi soket TCP tidak terputus akibat pembatasan koneksi serentak dari server game.
+name: SKYDEV Activity Standby Matrix (Paralel)
 on:
   workflow_dispatch:
     inputs:
@@ -14,9 +9,9 @@ on:
         description: "ActivityId world UGC (dari deeplink/nama world)"
         required: true
       jumlah:
-        description: "Jumlah bot standby"
-        required: false
-        default: "5"
+        description: "Jumlah total bot standby"
+        required: true
+        default: "30"
       durasi_menit:
         description: "Durasi standby (menit, maks 100)"
         required: false
@@ -25,17 +20,46 @@ on:
         description: "Tipe bot: named_bots atau accounts"
         required: false
         default: "accounts"
+
 jobs:
+  siapkan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      partisi: ${{ steps.hitung.outputs.partisi }}
+      jumlah_leg: ${{ steps.hitung.outputs.jumlah_leg }}
+      legs: ${{ steps.hitung.outputs.legs }}
+    steps:
+      - id: hitung
+        run: |
+          python3 - <<'EOF'
+          import json, math, os
+          jumlah = int("${{ inputs.jumlah }}")
+          # Pembagi 15: batas aman koneksi TCP room bersamaan per IP runner
+          legs = max(1, min(math.ceil(jumlah / 15), 100))
+          jumlah_leg = math.ceil(jumlah / legs)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"partisi={json.dumps(list(range(legs)))}\n")
+              f.write(f"jumlah_leg={jumlah_leg}\n")
+              f.write(f"legs={legs}\n")
+          print(f"jumlah={jumlah} legs={legs} jumlah_leg={jumlah_leg}")
+          EOF
+
   standby:
+    needs: siapkan
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        partisi: ${{ fromJSON(needs.siapkan.outputs.partisi) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install curl_cffi urllib3
-      - run: python -u test-activity/activity_standby.py "${{ inputs.activity_id }}" "${{ inputs.jumlah }}" "${{ inputs.durasi_menit }}" "${{ inputs.bot_type }}"
+      - run: python -u test-activity/activity_standby.py "${{ inputs.activity_id }}" "${{ needs.siapkan.outputs.jumlah_leg }}" "${{ inputs.durasi_menit }}" "${{ inputs.bot_type }}" "${{ matrix.partisi }}" "${{ needs.siapkan.outputs.legs }}"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
