@@ -15,14 +15,14 @@
 # (terbukti disjoin di SQL) apa pun ORDER BY-nya — leg tidak berebut
 # bot yang sama.
 #
-# Aturan leg: legs = min(ceil(jumlah_order/100), 100);
+# Aturan leg: legs = min(ceil(jumlah_order/50), 256);
 # tiap leg mengirim jumlah_leg = ceil(jumlah_order/legs).
-# Cap 100 leg (bukan 20 seperti matrix like profil) karena paket
-# follow toko sampai 10000 — 10000/100 = 100 leg. Melebihi batas
+# Cap 256 leg (batas matrix GitHub) karena paket
+# follow toko sampai 10000 — 10000/50 = 200 leg. Melebihi batas
 # job bersamaan akun, leg-leg sisanya MENGANTRE lalu jalan saat ada
-# slot kosong; tiap leg tetap <=100 bot di runner-nya sendiri.
+# slot kosong; tiap leg tetap <=50 bot di runner-nya sendiri.
 # Catatan biaya: tiap leg memakai ~1 menit setup runner
-# (checkout + python + pip), jadi order 10000 ~100 menit Actions.
+# (checkout + python + pip), jadi order 10000 ~200 menit Actions.
 #
 # Overshoot: follow tidak punya overshoot seperti like profil/rumah
 # (tiap bot dicoba sekali, tanpa ronde top-up) — total terkirim
@@ -69,7 +69,7 @@ jobs:
           python3 - <<'EOF'
           import json, math, os
           jumlah = int("${{ inputs.jumlah_order }}")
-          legs = max(1, min(math.ceil(jumlah / 50), 100))
+          legs = max(1, min(math.ceil(jumlah / 50), 256))
           jumlah_leg = math.ceil(jumlah / legs)
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"partisi={json.dumps(list(range(legs)))}\n")
