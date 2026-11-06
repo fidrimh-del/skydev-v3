@@ -38,7 +38,7 @@ jobs:
           python3 - <<'EOF'
           import json, math, os
           jumlah = int("${{ inputs.jumlah }}")
-          legs = max(1, min(math.ceil(jumlah / 25), 100))
+          legs = max(1, min(math.ceil(jumlah / 25), 256))
           jumlah_leg = math.ceil(jumlah / legs)
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"partisi={json.dumps(list(range(legs)))}\n")
