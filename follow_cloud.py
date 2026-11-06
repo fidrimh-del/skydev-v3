@@ -40,6 +40,12 @@ class PKXDSkydevFollowEngine:
             "Connection": "keep-alive"
         }
 
+    def update_versions(self, version, protocol):
+        """Memastikan variabel internal dan headers_base tersinkronisasi sempurna"""
+        self.version = version
+        self.game_protocol = protocol
+        self.headers_base["X-Protocol-Version"] = protocol
+
     def compute_signature(self, method, path, body_bytes):
         secret = self.app_secret.encode('utf-8')
         h = hmac.new(secret, method.encode('utf-8'), hashlib.sha256).digest()
@@ -151,10 +157,9 @@ async def record_history(session_http, target_uuid, success_emails):
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "resolution=ignore-duplicates" # Cegah error jika bot duplikat
+        "Prefer": "resolution=ignore-duplicates"
     }
     
-    # Format payload menjadi array of objects untuk di-insert massal
     payload = [{"target_uuid": target_uuid, "account_email": email} for email in success_emails]
     
     try:
@@ -168,10 +173,8 @@ async def record_history(session_http, target_uuid, success_emails):
 async def worker(engine, bot, target_uid, semaphore, pbar, success_list):
     async with semaphore:
         async with AsyncSession(impersonate=random.choice(engine.impersonate_targets), verify=False) as session:
-            # 1. Login Pintar (Otomatis dapat sesi baru)
             token = await engine.login_and_get_token(bot["email"], bot["password"], bot["device_id"], session)
             
-            # 2. Eksekusi Follow
             if token:
                 followed = await engine.execute_follow(token, target_uid, session)
                 if followed:
@@ -193,8 +196,6 @@ async def main():
     target_uuid = sys.argv[1].strip()
     jumlah_order = int(sys.argv[2].strip())
 
-    # Argumen matrix (opsional, harus sepasang): partisi + jumlah_partisi.
-    # Bila diisi, bot diambil via RPC _part (tanpa fallback jalur lama).
     partisi = None
     jumlah_partisi = None
     if len(sys.argv) > 3:
@@ -210,35 +211,35 @@ async def main():
 
     engine = PKXDSkydevFollowEngine()
 
-    # Versi game/protokol dari panel (tabel app_settings); fallback
-    # bawaan bila tak tersedia — job tetap jalan.
+    # Terapkan versi panel dan sinkronkan ke headers_base
     L.apply_panel_versions()
-    engine.version = L.VERSION
-    engine.game_protocol = L.GAME_PROTOCOL
+    engine.update_versions(L.VERSION, L.GAME_PROTOCOL)
 
     print(f"[*] SKYDEV V3 CLOUD: Menghubungkan ke Database untuk target {target_uuid[:8]}...")
 
-    # Ambil stok bot dari Cloud
+    # BUFFER STRATEGY: Ambil cadangan +25% (minimal +20 bot) agar pesanan 100 terjamin tercapai
+    buffer_bot = max(int(jumlah_order * 0.25), 20)
+    limit_ambil = jumlah_order + buffer_bot
+
     async with AsyncSession(verify=False) as session_http:
-        bots = await fetch_available_bots(session_http, target_uuid, jumlah_order, partisi, jumlah_partisi)
+        bots = await fetch_available_bots(session_http, target_uuid, limit_ambil, partisi, jumlah_partisi)
 
     if not bots:
         print("[-] STOK HABIS: Tidak ada akun segar yang tersedia untuk target ini.")
         return
 
-    print(f"[*] Berhasil menyaring {len(bots)} bot siap tembak. Memulai serangan...")
+    print(f"[*] Berhasil menyaring {len(bots)} bot siap tembak (Target order: {jumlah_order} + Buffer: {len(bots) - jumlah_order}).")
 
-    semaphore = asyncio.Semaphore(150) # Batas server github
+    # Turunkan Semaphore ke 40 agar tidak terjadi connection burst/drop di API Faster
+    semaphore = asyncio.Semaphore(40)
     success_list = []
     pbar = {"processed": 0, "success": 0, "total": len(bots)}
 
-    # Eksekusi Paralel Massal
     tasks = [asyncio.create_task(worker(engine, bot, target_uuid, semaphore, pbar, success_list)) for bot in bots]
     await asyncio.gather(*tasks)
 
     print(f"\n\n[+] PROSES SELESAI! {pbar['success']} akun berhasil mem-follow.")
     
-    # Simpan Histori ke Cloud
     if success_list:
         print(f"[*] Menyimpan riwayat ke database Supabase...")
         async with AsyncSession(verify=False) as session_http:
