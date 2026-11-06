@@ -15,6 +15,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# lookup_uuid.py kini hanya ada di root repo (duplikat di
+# test-activity/ dihapus 2026-11-06) — tambahkan root ke sys.path.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
 import lookup_uuid as L
 
 L.QUIET = False
