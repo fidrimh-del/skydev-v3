@@ -38,16 +38,3 @@ jobs:
         run: python register_test.py ${{ github.event.inputs.jumlah_per_server }}
         
       # Bagian 'Setor Hasil Sementara' dihapus total karena data sudah masuk ke database
-
-  # TAHAP 2: TUKANG SAPU (Menghapus log github agar tidak penuh)
-  bersih_history_max:
-    needs: pabrik_akun_max
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Hapus Log Lama
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh run list --status completed --limit 50 --json databaseId -q '.[].databaseId' | xargs -I{} gh run delete {} || true
