@@ -1,6 +1,7 @@
 """
 like_house_cloud.py — Kirim like RUMAH PK XD massal via TCP (produksi).
-Revisi: Optimasi jatah gate IP, penyesuaian paralel, & pacing socket TCP.
+Revisi: Optimasi jatah gate IP, penyesuaian paralel, pacing socket TCP,
+dan kuota ambil_limit proporsional (anti-sedot ratusan bot).
 """
 
 import asyncio
@@ -137,7 +138,7 @@ async def bot_coro(bot, target_uuid):
     prof = random.choice(("chrome110", "chrome116", "safari15_5"))
     async with L.AsyncSession(impersonate=prof,
                               verify=False) as session:
-        # Cukup 1 attempt penuh per bot agar tidak memboroskan jatah kuota IP runner
+        # Cukup 1 attempt penuh per bot agar tidak memboroskan jatah alokasi IP
         for attempt in range(1, 2):
             res = await H.like_house_once(session, bot, target_uuid)
             if res is None:
@@ -257,13 +258,17 @@ def main():
     ronde = 0
     offset = 0
     
-    # Ambil buffer cadangan bot proporsional (jumlah + buffer 40%, minimal 35)
-    ambil_limit = max(int(jumlah * 1.4), 35)
+    # Ambil buffer terkontrol: jumlah + buffer 30%, dijepit aman 30..65 bot
+    ambil_limit = max(int(jumlah * 1.3), 30)
+    if partisi is not None:
+        ambil_limit = min(ambil_limit, 65)
     
     while True:
-        if state["sent"] >= jumlah:
+        if state["sent"] >= jumlah or ronde >= 3:
             break
         ronde += 1
+        defisit = jumlah - state["sent"]
+        
         if pakai_rpc_baru:
             pool = H.get_house_bots(target_uuid, limit=ambil_limit,
                                     partisi=partisi,
@@ -286,7 +291,11 @@ def main():
                 if len(pool) < ambil_limit:
                     print(f"[*] RONDE {ronde}: semua bot di batch ini sudah tried — pool habis.")
                     break
-                ambil_limit += max(int(jumlah * 1.4), 35)
+                # Tambah kuota hanya sesuai defisit sisa + cadangan kecil
+                tambah = max(int(defisit * 1.3), 15)
+                ambil_limit += tambah
+                if partisi is not None:
+                    ambil_limit = min(ambil_limit, 70)
                 continue
             print(f"[*] RONDE {ronde}: {len(tugas)} bot fresh jalan "
                   f"(paralel {max_paralel}, ambil_limit {ambil_limit}).")
@@ -301,7 +310,10 @@ def main():
             if len(pool) < ambil_limit:
                 print("[*] RPC mengembalikan kurang dari limit — pool fresh habis.")
                 break
-            ambil_limit += max(int(jumlah * 1.4), 35)
+            tambah = max(int((jumlah - state["sent"]) * 1.3), 15)
+            ambil_limit += tambah
+            if partisi is not None:
+                ambil_limit = min(ambil_limit, 70)
         else:
             pool = P.get_bots_page(target_uuid, limit=HALAMAN, offset=offset)
             if not pool:
