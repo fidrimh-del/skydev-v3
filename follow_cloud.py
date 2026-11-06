@@ -26,8 +26,8 @@ class PKXDSkydevFollowEngine:
         self.lobby_url = "https://pkxd-lobby.aftvrsys.com"
         self.app_key = "57a3d999-654c-4484-a20c-0f4b5512af49"
         self.app_secret = "jWS5aLZacNVFx6PAxpXq2g4o" 
-        self.game_protocol = "1.93.0" 
-        self.version = "1.93.4"
+        self.game_protocol = "1.94.0"
+        self.version = "1.94.0"
         self.impersonate_targets = ["chrome110", "chrome116", "safari15_5"]
         
         self.headers_base = {
@@ -116,10 +116,12 @@ class PKXDSkydevFollowEngine:
 # ==========================================
 # FUNGSI SUPABASE CLOUD
 # ==========================================
-async def fetch_available_bots(session_http, target_uuid, limit):
+async def fetch_available_bots(session_http, target_uuid, limit, partisi=None, jumlah_partisi=None):
     """Mengambil bot segar dari Supabase melalui fungsi RPC"""
     BOT_TYPE = os.getenv("BOT_TYPE", "accounts")
     rpc_name = "get_fresh_named_bots" if BOT_TYPE == "named_bots" else "get_fresh_bots"
+    if partisi is not None:
+        rpc_name += "_part"
     endpoint = f"{SUPABASE_URL}/rest/v1/rpc/{rpc_name}"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -127,6 +129,9 @@ async def fetch_available_bots(session_http, target_uuid, limit):
         "Content-Type": "application/json"
     }
     payload = {"p_target_uuid": target_uuid, "p_limit": limit}
+    if partisi is not None:
+        payload["p_partisi"] = partisi
+        payload["p_jumlah_partisi"] = jumlah_partisi
     
     try:
         r = await session_http.post(endpoint, json=payload, headers=headers, timeout=20)
@@ -187,6 +192,22 @@ async def main():
 
     target_uuid = sys.argv[1].strip()
     jumlah_order = int(sys.argv[2].strip())
+
+    # Argumen matrix (opsional, harus sepasang): partisi + jumlah_partisi.
+    # Bila diisi, bot diambil via RPC _part (tanpa fallback jalur lama).
+    partisi = None
+    jumlah_partisi = None
+    if len(sys.argv) > 3:
+        if len(sys.argv) != 5:
+            print("[!] Format Error! Mode matrix butuh 2 argumen tambahan: <PARTISI> <JUMLAH_PARTISI>")
+            sys.exit(1)
+        partisi = int(sys.argv[3].strip())
+        jumlah_partisi = int(sys.argv[4].strip())
+        if jumlah_partisi < 1 or partisi < 0 or partisi >= jumlah_partisi:
+            print("[!] Format Error! Partisi harus 0 <= PARTISI < JUMLAH_PARTISI.")
+            sys.exit(1)
+        print(f"[*] Mode matrix: partisi {partisi}/{jumlah_partisi} (RPC _part, tanpa fallback jalur lama).")
+
     engine = PKXDSkydevFollowEngine()
 
     # Versi game/protokol dari panel (tabel app_settings); fallback
@@ -199,7 +220,7 @@ async def main():
 
     # Ambil stok bot dari Cloud
     async with AsyncSession(verify=False) as session_http:
-        bots = await fetch_available_bots(session_http, target_uuid, jumlah_order)
+        bots = await fetch_available_bots(session_http, target_uuid, jumlah_order, partisi, jumlah_partisi)
 
     if not bots:
         print("[-] STOK HABIS: Tidak ada akun segar yang tersedia untuk target ini.")
