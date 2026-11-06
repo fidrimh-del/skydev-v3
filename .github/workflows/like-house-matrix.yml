@@ -1,8 +1,8 @@
 # SKYDEV Like Rumah Matrix (Paralel) — kirim like rumah via N runner
 # paralel, masing-masing dengan partisi bot sendiri (rotasi IP).
 #
-# Revisi: Default max_paralel diturunkan ke 10 agar soket TCP
-# instance rumah tidak terkena rate-limit / timeout fail-noanswer.
+# Revisi: Default max_paralel diset ke 6 agar antrean join instance
+# room rumah mengalir lancar (rolling entry) dan bebas fail-noanswer.
 
 name: SKYDEV Like Rumah Matrix (Paralel)
 on:
@@ -16,9 +16,9 @@ on:
         required: true
         default: "500"
       max_paralel:
-        description: "Worker bersamaan per leg (maks 12)"
+        description: "Worker bersamaan per leg (maks 6 untuk stabilitas room TCP)"
         required: false
-        default: "10"
+        default: "6"
       bot_type:
         description: "Tipe bot: accounts atau named_bots"
         required: false
