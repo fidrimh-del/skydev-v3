@@ -1,12 +1,12 @@
 """
 like_house_cloud.py — Kirim like RUMAH PK XD massal via TCP (produksi).
 
-Perbaikan:
-  - Presisi Kuota (Anti-Overshoot): Rem ganda di run_bot (sebelum & sesudah sleep)
-    serta pembatasan ketat ambil_limit agar terkirim tepat sesuai pesanan.
-  - Exit Code Toleran: Sukses >= 80% mengembalikan exit code 0 (runner hijau).
-  - Circuit Breaker: Batas kegagalan total dan batas ronde agar tidak membuang waktu runner.
-  - Pacing TCP Terkendali: Menghindari pemblokiran soket TCP dari server world/rumah.
+Pembaruan Stabilitas:
+  - Paralel Dijepit 1..12: Mencegah penolakan socket TCP dari gate instance rumah.
+  - Pacing Diperhalus (1.0 - 3.5d): Menghindari herd behavior dan throttling IP.
+  - Rem Ganda Kuota: Mengeliminasi overshoot (target 25 tetap di kisaran 25).
+  - Toleransi Exit Code >= 80%: Runner tetap hijau saat 1-2 bot transient fail.
+  - Plafon Gagal Disesuaikan (MAX_GAGAL_TOTAL = 35): Mencegah abort prematur di ronde awal.
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -37,13 +37,13 @@ def is_uuid(s):
     return bool(UUID_RE.match((s or "").strip()))
 
 
-def clamp_paralel(n, default=15):
-    """Dijepit 1..25 dengan default 15 agar soket TCP tidak memicu rate-limit."""
+def clamp_paralel(n, default=10):
+    """Dijepit 1..12 dengan default 10 agar koneksi TCP instance rumah stabil."""
     try:
         v = int(n)
     except (TypeError, ValueError):
         return default
-    return max(1, min(25, v))
+    return max(1, min(12, v))
 
 
 def parse_args(argv):
@@ -56,7 +56,7 @@ def parse_args(argv):
         return None
     if not target or jumlah < 1:
         return None
-    max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 15)
+    max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 10)
     partisi = jumlah_partisi = None
     if len(argv) > 4:
         if len(argv) < 6:
@@ -183,15 +183,16 @@ async def bot_coro(bot, target_uuid):
 
 
 def run_bot(idx, bot, target_uuid, state):
-    # Rem Pertama: Cek sebelum antre & sleep
+    # Rem Pertama: Cek kuota sebelum masuk antrean
     with state["lock"]:
         if state["sent"] >= state["jumlah"]:
             return "skip-target-met"
         state["tried"].add(bot["email"])
 
-    time.sleep(random.uniform(0.5, 2.0))
+    # Pacing diperhalus agar soket TCP tidak membentur batas IP serentak
+    time.sleep(random.uniform(1.0, 3.5))
 
-    # Rem Kedua (Krusial): Cek tepat sesaat sebelum connect TCP socket
+    # Rem Kedua: Cek tepat sebelum membuka koneksi jaringan
     with state["lock"]:
         if state["sent"] >= state["jumlah"]:
             return "skip-target-met"
@@ -303,12 +304,11 @@ def main():
     ronde = 0
     offset = 0
 
-    # Batas pengaman agar tidak looping berulang jika IP diblokir server
     MAX_RONDE = 4
-    MAX_GAGAL_TOTAL = 20
+    MAX_GAGAL_TOTAL = 35
 
-    # Rem Ketat Kuota Fetch Awal: Maksimal hanya ambil sejumlah target + cadangan kecil (3-5 bot)
-    ambil_limit = min(jumlah + 5, 35)
+    # Ambil bot terukur: target + buffer kecil (3-5 bot)
+    ambil_limit = min(jumlah + 5, 32)
 
     while True:
         if state["sent"] >= jumlah or ronde >= MAX_RONDE:
@@ -401,7 +401,7 @@ def main():
                 f" dilewati_sesi={state['skipped']} gagal={len(state['failed_map'])}"
             )
 
-    # Ronde retry ringan (hanya bot yang sempat menjawab IsThere)
+    # Ronde retry: beri jeda sejenak agar socket IP dingin kembali
     if (
         state["sent"] < jumlah
         and state["failed_map"]
@@ -413,6 +413,8 @@ def main():
             if e not in state["noanswer"]
         ]
         if retry:
+            print("[*] Jeda 3 detik sebelum retry agar socket dingin...")
+            time.sleep(3.0)
             print(f"[*] RONDE RETRY: mencoba ulang {len(retry)} bot gagal...")
             nomor = jalankan_tugas(retry, target_uuid, state, max_paralel, nomor)
             print(
