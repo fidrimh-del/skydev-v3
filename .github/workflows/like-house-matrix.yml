@@ -1,41 +1,9 @@
 # SKYDEV Like Rumah Matrix (Paralel) — kirim like rumah via N runner
 # paralel, masing-masing dengan partisi bot sendiri (rotasi IP).
 #
-# Masalah yang dipecahkan: satu run = satu runner = satu IP = satu
-# jatah gate alokasi (~120-172, terbukti di like profil). Order besar
-# dalam satu run mentok di jatah itu lalu gagal massal. Matrix memecah
-# order menjadi leg-leg kecil (<=100 bot per leg, di bawah jatah
-# terkecil yang teramati) yang jalan SERENTAK di runner berbeda —
-# tiap leg = IP berbeda = jatah gate sendiri.
-#
-# Cara partisi (tanpa offset, tanpa fetch terpusat): tiap leg memakai
-# RPC _part (get_fresh_house_like_bots_part) dengan p_partisi = nomor
-# leg dan p_jumlah_partisi = jumlah leg. Partisi = hash email modulo
-# N, jadi tiap bot jatuh ke TEPAT SATU partisi (terbukti disjoin di
-# SQL) apa pun ORDER BY-nya — leg tidak berebut bot yang sama.
-#
-# Aturan leg: legs = min(ceil(jumlah/100), 20); tiap leg mengirim
-# jumlah_leg = ceil(jumlah/legs). Order toko maks 1000 -> maks 10 leg
-# @ 100 bot. Order >2000 akan melebihi 100 bot/leg (cap 20 leg) —
-# di luar jangkauan desain ini, jangan dipakai untuk order >2000.
-#
-# Overshoot: tiap leg punya overshoot sendiri (~in-flight worker,
-# ~19 pada paralel 20), jadi total terkirim ≈ jumlah + 19*legs
-# (mis. 500 = 5 leg -> ~500-595). Ini diterima, sama seperti
-# overshoot matrix profil (200 -> 238, 500 -> 588, 1000 -> 1156).
-#
-# Status run: GitHub mengagregasi — run sukses hanya bila SEMUA leg
-# sukses (fail-fast: false, jadi satu leg yang mentok tidak
-# membatalkan leg lain). Penilaian tetap dari log tiap leg + delta
-# DB, bukan dari status run semata (pelajaran 4 Nov: status bisa basi).
-#
-# Dipanggil dari dashboard panel (toggle "Matrix paralel", kartu
-# Like Rumah) lewat executeAndWait yang sama, atau dispatch manual
-# dari GitHub. Prasyarat: Secrets yang sama dengan like-house.yml.
-# Perbedaan dari like profil: LikeType 0 (rumah), JOIN wajib per bot,
-# histori house_like_history, paralel leg 20 (bukan 50, agar bonus
-# per leg tetap ~19 seperti matrix profil yang terbukti).
-#
+# Revisi: Default max_paralel diturunkan ke 10 agar soket TCP
+# instance rumah tidak terkena rate-limit / timeout fail-noanswer.
+
 name: SKYDEV Like Rumah Matrix (Paralel)
 on:
   workflow_dispatch:
@@ -48,13 +16,14 @@ on:
         required: true
         default: "500"
       max_paralel:
-        description: "Worker bersamaan per leg (maks 50)"
+        description: "Worker bersamaan per leg (maks 12)"
         required: false
-        default: "20"
+        default: "10"
       bot_type:
         description: "Tipe bot: accounts atau named_bots"
         required: false
         default: "accounts"
+
 jobs:
   siapkan:
     runs-on: ubuntu-latest
@@ -77,6 +46,7 @@ jobs:
               f.write(f"legs={legs}\n")
           print(f"jumlah={jumlah} legs={legs} jumlah_leg={jumlah_leg}")
           EOF
+
   like_rumah:
     needs: siapkan
     runs-on: ubuntu-latest
