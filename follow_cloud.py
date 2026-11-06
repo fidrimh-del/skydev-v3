@@ -154,8 +154,9 @@ async def fetch_available_bots(session_http, target_uuid, limit, partisi=None, j
         print(f"[-] Gagal mengambil bot dari database: {e}")
         return []
 
-async def record_history(session_http, target_uuid, success_emails):
-    if not success_emails: return
+async def record_history(session_http, target_uuid, new_success_emails):
+    if not new_success_emails:
+        return
     endpoint = f"{SUPABASE_URL}/rest/v1/follow_history"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -163,7 +164,7 @@ async def record_history(session_http, target_uuid, success_emails):
         "Content-Type": "application/json",
         "Prefer": "resolution=ignore-duplicates"
     }
-    payload = [{"target_uuid": target_uuid, "account_email": email} for email in success_emails]
+    payload = [{"target_uuid": target_uuid, "account_email": email} for email in new_success_emails]
     try:
         await session_http.post(endpoint, json=payload, headers=headers, timeout=30)
     except Exception as e:
@@ -172,12 +173,12 @@ async def record_history(session_http, target_uuid, success_emails):
 # ==========================================
 # WORKER UTAMA
 # ==========================================
-async def worker(engine, bot, target_uid, semaphore, success_list, total_target):
+async def worker(engine, bot, target_uid, semaphore, success_set, lock, total_target):
     async with semaphore:
-        if len(success_list) >= total_target:
-            return
+        async with lock:
+            if len(success_set) >= total_target:
+                return
             
-        # Pacing acak antar-bot agar tidak serentak menembak
         await asyncio.sleep(random.uniform(0.1, 0.8))
         
         async with AsyncSession(impersonate=random.choice(engine.impersonate_targets), verify=False) as session:
@@ -185,31 +186,40 @@ async def worker(engine, bot, target_uid, semaphore, success_list, total_target)
             if token:
                 followed = await engine.execute_follow(token, target_uid, session)
                 if followed:
-                    success_list.append(bot["email"])
-                    print(f"\r[SKYDEV] Progres Follow: {len(success_list)}/{total_target} (Berhasil)", end="", flush=True)
+                    async with lock:
+                        if len(success_set) < total_target:
+                            success_set.add(bot["email"])
+                            print(f"\r[SKYDEV] Progres Follow: {len(success_set)}/{total_target} (Berhasil)", end="", flush=True)
 
 async def main():
     if len(sys.argv) < 3:
-        print("[!] Format Error! Gunakan: python follow_cloud.py <TARGET_UUID> <JUMLAH_ORDER>")
-        sys.exit()
+        print("[!] Format Error! Gunakan: python follow_cloud.py <TARGET_UUID> <JUMLAH_ORDER> [PARTISI] [JUMLAH_PARTISI]")
+        sys.exit(1)
         
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("[!] EROR: Kredensial Supabase tidak ditemukan di Environment Variables!")
-        sys.exit()
+        sys.exit(1)
 
     target_uuid = sys.argv[1].strip()
-    jumlah_order = int(sys.argv[2].strip())
+    try:
+        jumlah_order = int(sys.argv[2].strip())
+    except ValueError:
+        print("[!] Format Error: JUMLAH_ORDER harus berupa angka.")
+        sys.exit(1)
 
     partisi = None
     jumlah_partisi = None
     if len(sys.argv) > 3:
         if len(sys.argv) != 5:
-            print("[!] Format Error! Mode matrix butuh 2 argumen tambahan: <PARTISI> <JUMLAH_PARTISI>")
+            print("[!] Format Error! Mode matrix butuh 2 argumen: <PARTISI> <JUMLAH_PARTISI>")
             sys.exit(1)
-        partisi = int(sys.argv[3].strip())
-        jumlah_partisi = int(sys.argv[4].strip())
+        try:
+            partisi = int(sys.argv[3].strip())
+            jumlah_partisi = int(sys.argv[4].strip())
+        except ValueError:
+            sys.exit(1)
         if jumlah_partisi < 1 or partisi < 0 or partisi >= jumlah_partisi:
-            print("[!] Format Error! Partisi harus 0 <= PARTISI < JUMLAH_PARTISI.")
+            print("[!] Format Error: Partisi harus 0 <= PARTISI < JUMLAH_PARTISI.")
             sys.exit(1)
 
     engine = PKXDSkydevFollowEngine()
@@ -218,9 +228,10 @@ async def main():
 
     print(f"[*] SKYDEV V3 CLOUD: Memulai target {target_uuid[:8]} (Total Pesanan: {jumlah_order})...")
 
-    # Semaphore 25: ritme stabil tanpa memicu lock limit server
     semaphore = asyncio.Semaphore(25)
-    all_success = []
+    lock = asyncio.Lock()
+    all_success = set()
+    tried_emails = set()
     ronde = 0
     maks_ronde = 4
 
@@ -228,35 +239,54 @@ async def main():
         ronde += 1
         defisit = jumlah_order - len(all_success)
         
-        # Ambil defisit + buffer 30%
         buffer = max(int(defisit * 0.3), 15)
         ambil_limit = defisit + buffer
 
         async with AsyncSession(verify=False) as session_http:
             bots_pool = await fetch_available_bots(session_http, target_uuid, ambil_limit, partisi, jumlah_partisi)
 
-        # Saring bot yang SUDAH SUKSES follow (bot yang gagal diizinkan dicoba lagi di ronde baru)
-        bots = [b for b in bots_pool if b.get("email") not in all_success]
+        # Saring bot: buang yang sudah pernah dicoba dalam sesi runner ini
+        bots = [b for b in bots_pool if b.get("email") and b["email"] not in tried_emails]
         if not bots:
             print(f"\n[-] STOK HABIS: Tidak ada lagi bot fresh di database (Terkirim: {len(all_success)}).")
             break
 
+        for b in bots:
+            tried_emails.add(b["email"])
+
         print(f"\n[*] RONDE {ronde}: Menjalankan {len(bots)} bot (Target sisa: {defisit})...")
         
-        tasks = [asyncio.create_task(worker(engine, bot, target_uuid, semaphore, all_success, jumlah_order)) for bot in bots]
+        sebelum_ronde = len(all_success)
+        tasks = [asyncio.create_task(worker(engine, bot, target_uuid, semaphore, all_success, lock, jumlah_order)) for bot in bots]
         await asyncio.gather(*tasks)
 
-        # Simpan histori bot yang berhasil
-        async with AsyncSession(verify=False) as session_http:
-            await record_history(session_http, target_uuid, all_success)
+        # Hanya kirimkan batch baru yang sukses di ronde ini ke DB histori
+        sukses_baru = [email for email in all_success if email in [b["email"] for b in bots]]
+        if sukses_baru:
+            async with AsyncSession(verify=False) as session_http:
+                await record_history(session_http, target_uuid, sukses_baru)
 
         if len(all_success) < jumlah_order:
-            print(f"\n[*] Target belum penuh ({len(all_success)}/{jumlah_order}), jeda pendinginan 6 detik...")
-            await asyncio.sleep(6.0)
+            if len(all_success) == sebelum_ronde:
+                print("\n[!] Tidak ada penambahan sukses di ronde ini. Menghentikan loop.")
+                break
+            print(f"\n[*] Target belum penuh ({len(all_success)}/{jumlah_order}), jeda pendinginan 4 detik...")
+            await asyncio.sleep(4.0)
+
+    total_sukses = len(all_success)
+    persentase = (total_sukses / jumlah_order) * 100 if jumlah_order > 0 else 0
 
     print(f"\n\n================================================")
-    print(f"[+] PROSES SELESAI! Total Berhasil Follow: {len(all_success)}/{jumlah_order}")
+    print(f"[+] PROSES SELESAI! Total Berhasil Follow: {total_sukses}/{jumlah_order} ({persentase:.1f}%)")
     print(f"================================================")
+
+    # Toleransi: jika mencapai >= 80% dari pesanan, anggap Runner sukses (Exit Code 0)
+    if persentase >= 80.0:
+        print("[+] Toleransi tercapai (>= 80%). Status Runner: HIJAU.")
+        sys.exit(0)
+    else:
+        print("[!] Capaian di bawah 80%. Status Runner: MERAH.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     if os.name == 'nt':
