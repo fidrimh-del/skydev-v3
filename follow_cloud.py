@@ -41,7 +41,6 @@ class PKXDSkydevFollowEngine:
         }
 
     def update_versions(self, version, protocol):
-        """Memastikan variabel internal dan headers_base tersinkronisasi sempurna"""
         self.version = version
         self.game_protocol = protocol
         self.headers_base["X-Protocol-Version"] = protocol
@@ -106,24 +105,26 @@ class PKXDSkydevFollowEngine:
             return None
 
     async def execute_follow(self, jwt_token, target_uid, session):
-        try:
-            headers = self.headers_base.copy()
-            headers["Authorization"] = f"Bearer {jwt_token}"
-            endpoint = f"{self.follow_url}/api/v1/follow/{target_uid}/follow"
-            
-            await asyncio.sleep(random.uniform(0.1, 0.4))
-            r = await session.post(endpoint, headers=headers, data=b"", timeout=15)
-            
-            # Jika respon 200, 201, atau 204 berarti sukses
-            return r.status_code in [200, 201, 204]
-        except:
-            return False
+        headers = self.headers_base.copy()
+        headers["Authorization"] = f"Bearer {jwt_token}"
+        endpoint = f"{self.follow_url}/api/v1/follow/{target_uid}/follow"
+        
+        for attempt in range(2):
+            try:
+                await asyncio.sleep(random.uniform(0.2, 0.6))
+                r = await session.post(endpoint, headers=headers, data=b"", timeout=15)
+                if r.status_code in [200, 201, 204]:
+                    return True
+                elif r.status_code == 429:
+                    await asyncio.sleep(random.uniform(1.5, 3.0))
+            except:
+                await asyncio.sleep(0.5)
+        return False
 
 # ==========================================
 # FUNGSI SUPABASE CLOUD
 # ==========================================
 async def fetch_available_bots(session_http, target_uuid, limit, partisi=None, jumlah_partisi=None):
-    """Mengambil bot segar dari Supabase melalui fungsi RPC"""
     BOT_TYPE = os.getenv("BOT_TYPE", "accounts")
     rpc_name = "get_fresh_named_bots" if BOT_TYPE == "named_bots" else "get_fresh_bots"
     if partisi is not None:
@@ -149,9 +150,7 @@ async def fetch_available_bots(session_http, target_uuid, limit, partisi=None, j
         return []
 
 async def record_history(session_http, target_uuid, success_emails):
-    """Menyimpan riwayat bot yang berhasil follow ke Supabase"""
     if not success_emails: return
-    
     endpoint = f"{SUPABASE_URL}/rest/v1/follow_history"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -159,9 +158,7 @@ async def record_history(session_http, target_uuid, success_emails):
         "Content-Type": "application/json",
         "Prefer": "resolution=ignore-duplicates"
     }
-    
     payload = [{"target_uuid": target_uuid, "account_email": email} for email in success_emails]
-    
     try:
         await session_http.post(endpoint, json=payload, headers=headers, timeout=30)
     except Exception as e:
@@ -170,19 +167,18 @@ async def record_history(session_http, target_uuid, success_emails):
 # ==========================================
 # WORKER UTAMA
 # ==========================================
-async def worker(engine, bot, target_uid, semaphore, pbar, success_list):
+async def worker(engine, bot, target_uid, semaphore, success_list, total_target):
     async with semaphore:
+        if len(success_list) >= total_target:
+            return
+            
         async with AsyncSession(impersonate=random.choice(engine.impersonate_targets), verify=False) as session:
             token = await engine.login_and_get_token(bot["email"], bot["password"], bot["device_id"], session)
-            
             if token:
                 followed = await engine.execute_follow(token, target_uid, session)
                 if followed:
                     success_list.append(bot["email"])
-                    pbar["success"] += 1
-            
-            pbar["processed"] += 1
-            print(f"\r[SKYDEV] Progres Follow: {pbar['success']}/{pbar['total']} (Berhasil)", end="", flush=True)
+                    print(f"\r[SKYDEV] Progres Follow: {len(success_list)}/{total_target} (Berhasil)", end="", flush=True)
 
 async def main():
     if len(sys.argv) < 3:
@@ -207,44 +203,51 @@ async def main():
         if jumlah_partisi < 1 or partisi < 0 or partisi >= jumlah_partisi:
             print("[!] Format Error! Partisi harus 0 <= PARTISI < JUMLAH_PARTISI.")
             sys.exit(1)
-        print(f"[*] Mode matrix: partisi {partisi}/{jumlah_partisi} (RPC _part, tanpa fallback jalur lama).")
 
     engine = PKXDSkydevFollowEngine()
-
-    # Terapkan versi panel dan sinkronkan ke headers_base
     L.apply_panel_versions()
     engine.update_versions(L.VERSION, L.GAME_PROTOCOL)
 
-    print(f"[*] SKYDEV V3 CLOUD: Menghubungkan ke Database untuk target {target_uuid[:8]}...")
+    print(f"[*] SKYDEV V3 CLOUD: Memulai target {target_uuid[:8]} (Total Pesanan: {jumlah_order})...")
 
-    # BUFFER STRATEGY: Ambil cadangan +25% (minimal +20 bot) agar pesanan 100 terjamin tercapai
-    buffer_bot = max(int(jumlah_order * 0.25), 20)
-    limit_ambil = jumlah_order + buffer_bot
+    semaphore = asyncio.Semaphore(20)
+    all_success = []
+    tried_emails = set()
+    ronde = 0
 
-    async with AsyncSession(verify=False) as session_http:
-        bots = await fetch_available_bots(session_http, target_uuid, limit_ambil, partisi, jumlah_partisi)
+    while len(all_success) < jumlah_order:
+        ronde += 1
+        defisit = jumlah_order - len(all_success)
+        
+        buffer = max(int(defisit * 0.25), 15)
+        ambil_limit = defisit + buffer
 
-    if not bots:
-        print("[-] STOK HABIS: Tidak ada akun segar yang tersedia untuk target ini.")
-        return
-
-    print(f"[*] Berhasil menyaring {len(bots)} bot siap tembak (Target order: {jumlah_order} + Buffer: {len(bots) - jumlah_order}).")
-
-    # Turunkan Semaphore ke 40 agar tidak terjadi connection burst/drop di API Faster
-    semaphore = asyncio.Semaphore(40)
-    success_list = []
-    pbar = {"processed": 0, "success": 0, "total": len(bots)}
-
-    tasks = [asyncio.create_task(worker(engine, bot, target_uuid, semaphore, pbar, success_list)) for bot in bots]
-    await asyncio.gather(*tasks)
-
-    print(f"\n\n[+] PROSES SELESAI! {pbar['success']} akun berhasil mem-follow.")
-    
-    if success_list:
-        print(f"[*] Menyimpan riwayat ke database Supabase...")
         async with AsyncSession(verify=False) as session_http:
-            await record_history(session_http, target_uuid, success_list)
-        print("[+] Riwayat berhasil diamankan!")
+            bots_pool = await fetch_available_bots(session_http, target_uuid, ambil_limit, partisi, jumlah_partisi)
+
+        bots = [b for b in bots_pool if b.get("email") not in tried_emails]
+        if not bots:
+            print(f"\n[-] STOK HABIS: Tidak ada lagi bot fresh di database (Terkirim: {len(all_success)}).")
+            break
+
+        for b in bots:
+            tried_emails.add(b["email"])
+
+        print(f"\n[*] RONDE {ronde}: Menjalankan {len(bots)} bot (Kekurangan saat ini: {defisit})...")
+        
+        tasks = [asyncio.create_task(worker(engine, bot, target_uuid, semaphore, all_success, jumlah_order)) for bot in bots]
+        await asyncio.gather(*tasks)
+
+        async with AsyncSession(verify=False) as session_http:
+            await record_history(session_http, target_uuid, all_success)
+
+        if len(all_success) < jumlah_order:
+            print(f"\n[*] Target belum penuh ({len(all_success)}/{jumlah_order}), pendinginan 5 detik sebelum lanjut...")
+            await asyncio.sleep(5.0)
+
+    print(f"\n\n================================================")
+    print(f"[+] PROSES SELESAI! Total Berhasil Follow: {len(all_success)}/{jumlah_order}")
+    print(f"================================================")
 
 if __name__ == "__main__":
     if os.name == 'nt':
