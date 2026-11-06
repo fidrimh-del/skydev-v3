@@ -17,12 +17,12 @@
 # partisi (terbukti disjoin di SQL) apa pun ORDER BY-nya — leg tidak
 # berebut bot yang sama.
 #
-# Aturan leg: legs = min(ceil(jumlah_bot/100), 100);
+# Aturan leg: legs = min(ceil(jumlah_bot/50), 256);
 # tiap leg mengirim jumlah_leg = ceil(jumlah_bot/legs) PER POSTINGAN.
-# Cap 100 leg karena paket like post toko sampai 5000 per postingan
-# (5000/100 = 50 leg). Melebihi batas job bersamaan akun, leg-leg
+# Cap 256 leg karena paket like post toko sampai 5000 per postingan
+# (5000/50 = 100 leg). Melebihi batas job bersamaan akun, leg-leg
 # sisanya MENGANTRE lalu jalan saat ada slot kosong; tiap leg tetap
-# <=100 bot di runner-nya sendiri.
+# <=50 bot di runner-nya sendiri.
 #
 # CATATAN: matrix TIDAK memperbaiki postingan yang 0/150 karena
 # ID-nya tidak valid (terbukti 5 Nov 2026: 4 postingan 0/150 dengan
@@ -75,7 +75,7 @@ jobs:
           python3 - <<'EOF'
           import json, math, os
           jumlah = int("${{ inputs.jumlah_bot }}")
-          legs = max(1, min(math.ceil(jumlah / 50), 100))
+          legs = max(1, min(math.ceil(jumlah / 50), 256))
           jumlah_leg = math.ceil(jumlah / legs)
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"partisi={json.dumps(list(range(legs)))}\n")
