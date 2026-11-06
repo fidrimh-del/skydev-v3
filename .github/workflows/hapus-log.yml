@@ -1,0 +1,21 @@
+name: Hapus Log GitHub
+
+on:
+  workflow_dispatch:
+
+jobs:
+  hapus-log:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Hapus semua run yang sudah selesai
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for i in $(seq 1 20); do
+            ids=$(gh run list --status completed --limit 100 --json databaseId -q '.[].databaseId')
+            [ -z "$ids" ] && break
+            echo "$ids" | xargs -I{} gh run delete {} || true
+          done
+          echo "Semua log run yang sudah selesai telah dihapus."
