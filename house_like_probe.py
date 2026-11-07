@@ -8,6 +8,8 @@ Revisi Stabilitas:
   - Mode cepat tanpa IsThere ulang jika server tidak menjawab query pertama.
   - Gagal-cepat tanpa JOIN manual (2026-11-07): bila login window tidak
     auto-join, langsung gagal — JOIN manual tidak pernah berhasil.
+  - Realokasi maks 2x (2026-11-07): bila tidak auto-join, alokasi ulang
+    ke instance baru sebelum gagal (diag: fail 46.7% -> 20.0%).
 """
 
 import asyncio
@@ -137,53 +139,60 @@ def get_house_bots(target_uuid, limit=8, partisi=None, jumlah_partisi=None):
 
 
 async def like_house_once(session, bot, target_uuid):
-    user_jwt, alloc = await L.login_and_allocate(
-        bot["email"], bot["password"], bot["device_id"], session
-    )
-    if not alloc:
-        return None
+    # REALOKASI (2026-11-07, diag run 42322365542): bila alokasi tidak
+    # auto-join, alokasi ulang (instance game server baru) maks 2x.
+    # Diag: fail 46.7% -> 20.0% (9 dari 15 bot yg direalokasi sukses
+    # di alokasi ke-2). JOIN manual tetap TIDAK dipakai (gagal-cepat).
+    for percobaan in (1, 2):
+        user_jwt, alloc = await L.login_and_allocate(
+            bot["email"], bot["password"], bot["device_id"], session
+        )
+        if not alloc:
+            return None
 
-    host, port = L.find_host_port(alloc)
-    gsid = alloc.get("gameServerId", "")
-    if not host or not port:
-        return None
+        host, port = L.find_host_port(alloc)
+        gsid = alloc.get("gameServerId", "")
+        if not host or not port:
+            return None
 
-    s, pid = L.tcp_connect(host, port)
-    if s is None:
-        return None
+        s, pid = L.tcp_connect(host, port)
+        if s is None:
+            return None
 
-    reader = P.FrameReader(s)
-    try:
-        s.sendall(L.build_login_frame(user_jwt))
-    except Exception:
-        _safe_close(s)
-        return None
-
-    _jstate = {"room": None}
-
-    def _login_pred(fr):
-        t, r = L.scan_login_window([fr])
-        if r is not None:
-            _jstate["room"] = r
-        return _jstate["room"] is not None
-
-    try:
-        fr, closed = reader.read_until(_login_pred, 4)
-        if closed:
+        reader = P.FrameReader(s)
+        try:
+            s.sendall(L.build_login_frame(user_jwt))
+        except Exception:
             _safe_close(s)
             return None
 
-        room = _jstate["room"]
-        if room is None:
-            # GAGAL-CEPAT (2026-11-07, diag run 42319880596, disetujui Bartes):
-            # JOIN manual TIDAK PERNAH berhasil untuk like rumah (62x
-            # JoinRoom gagal, 0 sukses; semua bot yang auto-join sukses
-            # 100%). Bot yang tidak auto-join langsung gagal cepat
-            # (~5 dtk) supaya worker bisa ambil bot fresh berikutnya;
-            # jangan buang ~15 dtk untuk 5 ruangan yang pasti ditolak.
-            _safe_close(s)
-            return None
+        _jstate = {"room": None}
 
+        def _login_pred(fr):
+            t, r = L.scan_login_window([fr])
+            if r is not None:
+                _jstate["room"] = r
+            return _jstate["room"] is not None
+
+        room = None
+        try:
+            fr, closed = reader.read_until(_login_pred, 4)
+            if closed:
+                _safe_close(s)
+                return None
+
+            room = _jstate["room"]
+            if room is None:
+                # Tidak auto-join: alokasi ulang (percobaan 2) atau gagal.
+                _safe_close(s)
+                if percobaan == 1:
+                    continue
+                return None
+        except Exception:
+            _safe_close(s)
+            raise
+
+        # room didapat (auto-join) -> Create + IsThere
         def do_is_there_house():
             frame = L.build_room_event_varint(
                 "like", P.build_like_protobuf(2, target_uuid, LIKE_TYPE_HOUSE)
@@ -200,8 +209,8 @@ async def like_house_once(session, bot, target_uuid):
                 return None
             return P.decode_is_there_result(fr)
 
-        # 1. Kirim event create like rumah
         try:
+            # 1. Kirim event create like rumah
             s.sendall(
                 L.build_room_event_varint(
                     "like",
@@ -216,26 +225,28 @@ async def like_house_once(session, bot, target_uuid):
         await asyncio.sleep(1.2)
 
         # 2. Cek verifikasi IsThere
-        after = do_is_there_house()
-        answered = after is not None
-
-        if not (after and after.get("exists") is True):
-            await asyncio.sleep(1.0)
+        try:
             after = do_is_there_house()
-            answered = answered or (after is not None)
+            answered = after is not None
 
-        if after and after.get("exists") is True:
-            history_put_house(bot["email"], target_uuid)
+            if not (after and after.get("exists") is True):
+                await asyncio.sleep(1.0)
+                after = do_is_there_house()
+                answered = answered or (after is not None)
 
-        return {
-            "already": False,
-            "before": None,
-            "after": after,
-            "answered": answered,
-        }
+            if after and after.get("exists") is True:
+                history_put_house(bot["email"], target_uuid)
 
-    finally:
-        _safe_close(s)
+            return {
+                "already": False,
+                "before": None,
+                "after": after,
+                "answered": answered,
+            }
+        finally:
+            _safe_close(s)
+
+    return None
 
 
 def _safe_close(sock):
