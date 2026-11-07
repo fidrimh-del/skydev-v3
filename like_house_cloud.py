@@ -230,7 +230,10 @@ def jalankan_tugas(tugas, target_uuid, state, max_paralel, nomor_awal):
         for bot in tugas:
             nomor += 1
             futs.append(pool.submit(run_bot, nomor, bot, target_uuid, state))
-            time.sleep(0.1)
+            # STAGGER (2026-11-07, diag): renggangkan start antar bot 1 dtk
+            # supaya auto-join tidak berebut sekaligus. Diag: fail 46.7%
+            # -> 33.3% dgn stagger 1.0 dtk.
+            time.sleep(1.0)
         for f in futs:
             try:
                 f.result()
