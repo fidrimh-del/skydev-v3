@@ -87,6 +87,65 @@ def build_cr_door(game_id, door_index):
             + b"\x18" + L.varint(int(door_index)))
 
 
+# ---------- protobuf Quest Trigger (QuestTriggerRequestMessage) ----------
+# Alur quest: terima PlayerResult -> UpdateEndRaceTriggers() ->
+# CrazyRunFinishedQuestTrigger (CRAZY_RUN_FINISHED) -> SendQuestTriggers()
+# -> RoomEvent 'quests'. Bot selama ini HANYA kirim GameEnd mentah
+# (RunCount naik) tapi TIDAK kirim trigger ini, jadi quest 1/100 tidak
+# bergerak (Bartes 2026-11-08 01:49 WIB: mod InstantWin memanggil
+# FinishRace() game sendiri sehingga trigger ikut terkirim).
+# QuestTriggerRequestMessage: f1 EventId (varint, 3=TriggerQuest),
+# f2 Trigger (string), f3 Attributes (map<string, Value>).
+# Value (Google.Protobuf.WellKnownTypes.Value): number_value f2 (double,
+# wire type 1, tag 0x11), string_value f3 (tag 0x1A), bool_value f4
+# (tag 0x20). Map entry: f1 key (string, tag 0x0A), f2 value (Value,
+# tag 0x12). Map field f3 (tag 0x1A).
+
+QUEST_CMD = "quests"
+QUEST_EVENT_TRIGGER = 3
+QUEST_TRIGGER_NAME = "CRAZY_RUN_FINISHED"
+CRAZY_RUN_QUEST_ID = "48fca873-32d5-4d01-bc2c-094ee2a32daf"
+
+
+def _pb_value_number(num):
+    return b"\x11" + struct.pack("<d", float(num))
+
+
+def _pb_value_string(s):
+    b = s.encode("utf-8")
+    return b"\x1a" + L.varint(len(b)) + b
+
+
+def _pb_value_bool(flag):
+    return b"\x20" + L.varint(1 if flag else 0)
+
+
+def _pb_map_entry(key, value_bytes):
+    k = key.encode("utf-8")
+    return (b"\x0a" + L.varint(len(k)) + k
+            + b"\x12" + L.varint(len(value_bytes)) + value_bytes)
+
+
+def build_quest_trigger(run_time, quest_id=CRAZY_RUN_QUEST_ID):
+    """QuestTriggerRequestMessage untuk CRAZY_RUN_FINISHED."""
+    attrs = [
+        ("activeQuestId", _pb_value_string(quest_id)),
+        ("timeSpent", _pb_value_number(run_time)),
+        ("starsCollected", _pb_value_number(0)),
+        ("fellInWater", _pb_value_bool(False)),
+        ("playerCount", _pb_value_number(1)),
+        ("wasWithPet", _pb_value_bool(False)),
+        ("powerUpUsed", _pb_value_number(0)),
+    ]
+    out = b"\x08" + L.varint(QUEST_EVENT_TRIGGER)
+    t = QUEST_TRIGGER_NAME.encode("utf-8")
+    out += b"\x12" + L.varint(len(t)) + t
+    for key, val in attrs:
+        entry = _pb_map_entry(key, val)
+        out += b"\x1a" + L.varint(len(entry)) + entry
+    return out
+
+
 def parse_protobuf_fields(data):
     """Parser protobuf generik (best-effort): kembalikan list
     (field_no, wire_type, value). Dipakai untuk mengintip isi respons."""
@@ -238,7 +297,8 @@ async def crazyrun_once(session, email, password, device_id, command,
              "count_sebelum": None, "count_sesudah": None,
              "energy_sebelum": None, "energy_sesudah": None,
              "game_id": None, "can_start": None,
-             "player_result": None, "events": []}
+             "player_result": None, "quest_sent": None,
+             "quest_events": [], "events": []}
     user_jwt, alloc = await L.login_and_allocate(email, password, device_id,
                                                  session)
     if not alloc:
@@ -290,6 +350,10 @@ async def crazyrun_once(session, email, password, device_id, command,
             hasil["player_result"] = {"run_count": d.get(9),
                                       "run_time": d.get(7)}
             print(f"[+] PlayerResult: RunCount={d.get(9)} RunTime={d.get(7)}")
+        # Tangkap respons quest (RoomEvent 'quest' = QuestUpdate).
+        if name == "quest":
+            hasil["quest_events"].append(data.hex() if data else "")
+            print(f"[+] Respons QUEST diterima ({len(data) if data else 0} B).")
 
     # --- tunggu jendela login (pola WAIT-LOGIN): tbugv atau JoinedRoom ---
     print("[*] tunggu jendela login (tbugv/JoinedRoom, maks 3 dtk)...")
@@ -364,6 +428,23 @@ async def crazyrun_once(session, email, password, device_id, command,
         return hasil
     tunggu_respons(6, "Finish/PlayerResult")
 
+    # 4b) Quest trigger (CRAZY_RUN_FINISHED) via RoomEvent 'quests'.
+    # Ini langkah yang dilewati bot selama ini: GameEnd saja menaikkan
+    # RunCount tapi TIDAK menaikkan quest (1/100). Client game normal
+    # mengirim trigger ini setelah terima PlayerResult
+    # (UpdateEndRaceTriggers -> SendQuestTriggers). Server membalas di
+    # RoomEvent 'quest' (QuestUpdate). Tunggu 4 dtk untuk responsnya.
+    print("[*] kirim QuestTrigger 'CRAZY_RUN_FINISHED' via RoomEvent "
+          "'quests' ...")
+    try:
+        sock.sendall(L.build_room_event_varint(
+            QUEST_CMD, build_quest_trigger(run_time)))
+        hasil["quest_sent"] = True
+    except Exception as exc:
+        print(f"[!] kirim QuestTrigger gagal: {exc}")
+        hasil["quest_sent"] = False
+    tunggu_respons(4, "QuestTrigger")
+
     # 5) GetUserData (Count) — SESUDAH
     if not kirim(EV_COUNT, build_cr_request(EV_COUNT), "GetUserData"):
         return hasil
@@ -416,6 +497,10 @@ async def main():
     print(f"  RunCount SESUDAH: {hasil['count_sesudah']} "
           f"(energi {hasil['energy_sesudah']})")
     print(f"  PlayerResult: {hasil['player_result']}")
+    print(f"  QuestTrigger terkirim: {hasil['quest_sent']} | "
+          f"respons 'quest' diterima: {len(hasil['quest_events'])}")
+    for hx in hasil["quest_events"]:
+        print(f"    - quest: {hx[:200]}")
     if (hasil['count_sebelum'] is not None
             and hasil['count_sesudah'] is not None):
         naik = hasil['count_sesudah'] - hasil['count_sebelum']
