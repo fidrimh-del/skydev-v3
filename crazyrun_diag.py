@@ -334,7 +334,7 @@ async def crazyrun_once(session, email, password, device_id, command,
     if not gid:
         print("[!] GameId tidak ditemukan di respons Join — "
               "tetap coba Finish dengan GameId kosong.")
-    if not kirim(EV_FINISH, build_cr_end(gid, run_time, True),
+    if not kirim(EV_FINISH, build_cr_end(gid, run_time, False),
                  f"GameEnd(time={run_time})"):
         return hasil
     tunggu_respons(6, "Finish/PlayerResult")
@@ -363,9 +363,9 @@ async def main():
                     default=os.getenv("CRAZYRUN_DEVICE_ID", "")
                     or "9f31c2d4-probe-device")
     ap.add_argument("--command",
-                    default=os.getenv("CRAZYRUN_COMMAND", "crazy_run"))
+                    default=os.getenv("CRAZYRUN_COMMAND", "crazy-run"))
     ap.add_argument("--time", type=float,
-                    default=float(os.getenv("CRAZYRUN_TIME", "45")))
+                    default=float(os.getenv("CRAZYRUN_TIME", "12")))
     ap.add_argument("--wait-start", type=float,
                     default=float(os.getenv("CRAZYRUN_WAIT_START", "10")))
     args = ap.parse_args()
