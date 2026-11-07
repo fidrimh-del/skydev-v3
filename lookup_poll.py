@@ -141,7 +141,7 @@ def build_message(order, status):
         "likes": " Like Postingan",
         "like_profil": " Like Profil",
         "like_rumah": " Like Rumah",
-        "ugc_counter": " Counter UGC",
+        "ugc_counter": " Visitor Builder",
     }.get(snap.get("type"), "")
     paket_label = (
         f"{snap.get('name', 'Paket PK XD')} — {snap.get('amount', '')}"
