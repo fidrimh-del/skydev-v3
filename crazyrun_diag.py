@@ -42,6 +42,7 @@ import socket
 import struct
 import sys
 import time
+import uuid
 
 import lookup_uuid as L
 
@@ -144,6 +145,35 @@ def build_quest_trigger(run_time, quest_id=CRAZY_RUN_QUEST_ID):
         entry = _pb_map_entry(key, val)
         out += b"\x1a" + L.varint(len(entry)) + entry
     return out
+
+
+# ---------- protobuf User Statistics (UpdateNumberStatisticRequest) ----
+# Mekanisme: RoomEvent 'user_statistics' (UserStatisticsCommandKey).
+# UpdateNumberStatisticRequest: f1 EventId (varint, 1=UpdateNumberStat),
+# f2 Statistic (NumberStatistic), f3 RequestId (string, unik).
+# NumberStatistic: f1 Id (string, kunci statistik), f2 Value (int varint).
+# Kunci statistik didapat dari hook ProgressLog (Bartes 2026-11-08
+# 02:14 WIB, akun utama): crazy_run_total_matches, crazy_run_total_stars,
+# crazy_run_race_time, minigame_birthday_2025_crazy_run,
+# wealth_total_coins_earned. Nilai yang dikirim = nilai BARU (kumulatif),
+# bukan increment — jadi bot pakai RunCount SESUDAH untuk total_matches.
+# Statistik inilah yang menggerakkan Achievement & Misi (quest saja tidak
+# cukup). Respons server: RoomEvent 'user_statistics' (SyncResponse /
+# UpdateUserNumberStatisticResponse).
+
+STAT_CMD = "user_statistics"
+STAT_EVENT_UPDATE_NUMBER = 1
+
+
+def build_stat_update(stat_id, value):
+    """UpdateNumberStatisticRequest untuk satu statistik angka."""
+    sid = stat_id.encode("utf-8")
+    num = (b"\x0a" + L.varint(len(sid)) + sid
+           + b"\x10" + L.varint(int(value)))
+    req_id = str(uuid.uuid4()).encode("utf-8")
+    return (b"\x08" + L.varint(STAT_EVENT_UPDATE_NUMBER)
+            + b"\x12" + L.varint(len(num)) + num
+            + b"\x1a" + L.varint(len(req_id)) + req_id)
 
 
 def parse_protobuf_fields(data):
@@ -298,7 +328,8 @@ async def crazyrun_once(session, email, password, device_id, command,
              "energy_sebelum": None, "energy_sesudah": None,
              "game_id": None, "can_start": None,
              "player_result": None, "quest_sent": None,
-             "quest_events": [], "events": []}
+             "quest_events": [], "stat_sent": None, "stat_events": [],
+             "events": []}
     user_jwt, alloc = await L.login_and_allocate(email, password, device_id,
                                                  session)
     if not alloc:
@@ -354,6 +385,11 @@ async def crazyrun_once(session, email, password, device_id, command,
         if name == "quest":
             hasil["quest_events"].append(data.hex() if data else "")
             print(f"[+] Respons QUEST diterima ({len(data) if data else 0} B).")
+        # Tangkap respons statistik (RoomEvent 'user_statistics').
+        if name == "user_statistics":
+            hasil["stat_events"].append(data.hex() if data else "")
+            print(f"[+] Respons STATISTIK diterima "
+                  f"({len(data) if data else 0} B).")
 
     # --- tunggu jendela login (pola WAIT-LOGIN): tbugv atau JoinedRoom ---
     print("[*] tunggu jendela login (tbugv/JoinedRoom, maks 3 dtk)...")
@@ -450,6 +486,29 @@ async def crazyrun_once(session, email, password, device_id, command,
         return hasil
     tunggu_respons(4, "Count-sesudah")
 
+    # 5b) Statistik user (UpdateNumberStatisticRequest via 'user_statistics').
+    # Ini yang menggerakkan Achievement & Misi (quest saja tidak cukup).
+    # Kunci dari hook ProgressLog Bartes: 'crazy_run_total_matches' dkk.
+    # Nilai = nilai BARU (kumulatif): total_matches = RunCount SESUDAH.
+    # Statistik lain (stars/race_time/coins) butuh nilai awal bot yang
+    # belum disinkronkan — tahap ini kirim total_matches dulu.
+    total_matches = hasil["count_sesudah"]
+    if total_matches is not None:
+        print(f"[*] kirim Statistik 'crazy_run_total_matches'={total_matches} "
+              f"via RoomEvent 'user_statistics' ...")
+        try:
+            sock.sendall(L.build_room_event_varint(
+                STAT_CMD, build_stat_update("crazy_run_total_matches",
+                                            total_matches)))
+            hasil["stat_sent"] = True
+        except Exception as exc:
+            print(f"[!] kirim Statistik gagal: {exc}")
+            hasil["stat_sent"] = False
+        tunggu_respons(4, "Statistik")
+    else:
+        print("[!] RunCount SESUDAH tidak diketahui — statistik dilewati.")
+        hasil["stat_sent"] = False
+
     # 6) LeaveGame
     kirim(EV_LEAVE, build_cr_request(EV_LEAVE), "LeaveGame")
     tunggu_respons(2, "Leave")
@@ -501,6 +560,10 @@ async def main():
           f"respons 'quest' diterima: {len(hasil['quest_events'])}")
     for hx in hasil["quest_events"]:
         print(f"    - quest: {hx[:200]}")
+    print(f"  Statistik terkirim: {hasil['stat_sent']} | "
+          f"respons 'user_statistics' diterima: {len(hasil['stat_events'])}")
+    for hx in hasil["stat_events"]:
+        print(f"    - user_statistics: {hx[:200]}")
     if (hasil['count_sebelum'] is not None
             and hasil['count_sesudah'] is not None):
         naik = hasil['count_sesudah'] - hasil['count_sebelum']
