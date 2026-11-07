@@ -12,6 +12,7 @@ jobs:
       - name: Hapus semua run yang sudah selesai
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: fidrimh-del/skydev-v3
         run: |
           for i in $(seq 1 20); do
             ids=$(gh run list --status completed --limit 100 --json databaseId -q '.[].databaseId')
