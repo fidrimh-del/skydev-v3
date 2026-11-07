@@ -246,7 +246,8 @@ def decode_room_event(frame):
         return None, None
 
 
-async def clan_once(session, email, password, device_id, clan_name):
+async def clan_once(session, email, password, device_id, clan_name,
+                    clan_id_known=""):
     """Satu percobaan penuh. Kembalikan dict hasil (untuk HASIL)."""
     hasil = {"email": email, "clan_name": clan_name,
              "current_clan": None, "search_results": [],
@@ -329,41 +330,52 @@ async def clan_once(session, email, password, device_id, clan_name):
         return hasil
     tunggu_respons(4, "GetUserClan")
 
-    # 2) SearchClan — cari clan by nama.
-    if not kirim(build_search_clan(clan_name), f"SearchClan('{clan_name}')"):
-        return hasil
-    frames = tunggu_respons(5, "SearchClan")
-    # Parse SearchClanResponse: cari Clan yang namanya cocok (case-insensitive).
-    for f in frames:
-        name, data = decode_room_event(f)
-        if name != "clan" or not data:
-            continue
-        fields = parse_protobuf_fields(data)
-        d = dict((f, v) for f, _w, v in fields)
-        # Field 3 (repeated Clan) muncul sebagai beberapa entri string/bytes
-        # berupa hex; decode tiap entri sebagai pesan Clan.
-        for fno, wt, v in fields:
-            if fno != 3 or wt != "string/bytes":
+    # 2) SearchClan — cari clan by nama (dilewati kalau clanId sudah
+    #    diketahui, mis. dari log mod ClanLog).
+    target = None
+    if clan_id_known:
+        target = clan_id_known
+        print(f"[*] clanId sudah diketahui dari log mod: {target} "
+              f"(SearchClan dilewati)")
+    else:
+        if not kirim(build_search_clan(clan_name),
+                     f"SearchClan('{clan_name}')"):
+            return hasil
+        frames = tunggu_respons(5, "SearchClan")
+        # Parse SearchClanResponse: cari Clan yang namanya cocok
+        # (case-insensitive).
+        for f in frames:
+            name, data = decode_room_event(f)
+            if name != "clan" or not data:
                 continue
-            try:
-                raw = bytes.fromhex(v)
-            except Exception:
-                continue
-            c = parse_clan_message(raw)
-            if not c.get("clan_id"):
-                continue
-            hasil["search_results"].append(c)
-            print(f"[+] Clan ditemukan: {c}")
-            if c.get("name", "").lower() == clan_name.lower():
-                hasil["target_clan_id"] = c["clan_id"]
-                print(f"[+] Target cocok: {c['name']} id={c['clan_id']}")
+            fields = parse_protobuf_fields(data)
+            d = dict((f, v) for f, _w, v in fields)
+            # Field 3 (repeated Clan) muncul sebagai beberapa entri
+            # string/bytes berupa hex; decode tiap entri sebagai pesan Clan.
+            for fno, wt, v in fields:
+                if fno != 3 or wt != "string/bytes":
+                    continue
+                try:
+                    raw = bytes.fromhex(v)
+                except Exception:
+                    continue
+                c = parse_clan_message(raw)
+                if not c.get("clan_id"):
+                    continue
+                hasil["search_results"].append(c)
+                print(f"[+] Clan ditemukan: {c}")
+                if c.get("name", "").lower() == clan_name.lower():
+                    hasil["target_clan_id"] = c["clan_id"]
+                    print(f"[+] Target cocok: {c['name']} "
+                          f"id={c['clan_id']}")
+        target = hasil["target_clan_id"]
 
     # 3) JoinClan — gabung by clanId (kalau target ketemu).
-    target = hasil["target_clan_id"]
     if not target:
         print(f"[!] Clan '{clan_name}' TIDAK ditemukan di hasil pencarian — "
               f"join dilewati.")
     else:
+        hasil["target_clan_id"] = target
         if not kirim(build_join_clan(target), f"JoinClan(id={target})"):
             return hasil
         hasil["join_sent"] = True
@@ -385,19 +397,23 @@ async def main():
                     default=os.getenv("CLAN_DEVICE_ID", "")
                     or "9f31c2d4-probe-device")
     ap.add_argument("--clan", default=os.getenv("CLAN_NAME", "biackhat"))
+    ap.add_argument("--clan-id", default=os.getenv("CLAN_ID", ""),
+                    help="Clan ID (dari log mod). Kalau diisi, SearchClan "
+                         "dilewati dan langsung JoinClan by ID.")
     args = ap.parse_args()
     if not args.email or not args.password:
         print("[!] email/password bot wajib diisi "
               "(input workflow / env CLAN_EMAIL & CLAN_PASSWORD).")
         return 1
-    print(f"[*] Diag Join Clan — bot {args.email} | clan '{args.clan}'")
+    print(f"[*] Diag Join Clan — bot {args.email} | clan '{args.clan}'"
+          + (f" | clanId '{args.clan_id}'" if args.clan_id else ""))
     L.QUIET = False
     t0 = time.time()
     async with L.AsyncSession(impersonate="chrome110",
                               verify=False) as session:
         hasil = await clan_once(
             session, args.email, args.password, args.device_id,
-            args.clan)
+            args.clan, args.clan_id)
     print("=" * 56)
     print("HASIL JOIN CLAN DIAG")
     print(f"  Bot: {hasil['email']} | clan target: {hasil['clan_name']}")
