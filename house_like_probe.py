@@ -6,6 +6,8 @@ Revisi Stabilitas:
   - Soket di-close secara agresif dengan shutdown(SHUT_RDWR) di blok finally.
   - Timeout IsThere dipangkas (4 detik) agar bot gagal cepat dan tidak menahan thread (anti-22d).
   - Mode cepat tanpa IsThere ulang jika server tidak menjawab query pertama.
+  - Gagal-cepat tanpa JOIN manual (2026-11-07): bila login window tidak
+    auto-join, langsung gagal — JOIN manual tidak pernah berhasil.
 """
 
 import asyncio
@@ -173,8 +175,12 @@ async def like_house_once(session, bot, target_uuid):
 
         room = _jstate["room"]
         if room is None:
-            room = L.tcp_join_only(s, gsid)
-        if room is None:
+            # GAGAL-CEPAT (2026-11-07, diag run 42319880596, disetujui Bartes):
+            # JOIN manual TIDAK PERNAH berhasil untuk like rumah (62x
+            # JoinRoom gagal, 0 sukses; semua bot yang auto-join sukses
+            # 100%). Bot yang tidak auto-join langsung gagal cepat
+            # (~5 dtk) supaya worker bisa ambil bot fresh berikutnya;
+            # jangan buang ~15 dtk untuk 5 ruangan yang pasti ditolak.
             _safe_close(s)
             return None
 
