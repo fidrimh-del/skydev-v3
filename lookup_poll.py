@@ -61,7 +61,7 @@ DASHBOARD_URL = "https://pkxd-shop-v2.vercel.app/#/admin/pesanan"
 ORDER_FIELDS = (
     "id,code,customer_pkxd_id,customer_user_id,customer_whatsapp,"
     "package_snapshot,payment_method,subtotal,discount,total,promo_code,"
-    "created_at,player_uuid,uuid_error,uuid_status"
+    "created_at,player_uuid,uuid_error,uuid_status,activity_id,ugc_world_name,ugc_thumbnail"
 )
 
 _TG = None
@@ -141,6 +141,7 @@ def build_message(order, status):
         "likes": " Like Postingan",
         "like_profil": " Like Profil",
         "like_rumah": " Like Rumah",
+        "ugc_counter": " Counter UGC",
     }.get(snap.get("type"), "")
     paket_label = (
         f"{snap.get('name', 'Paket PK XD')} — {snap.get('amount', '')}"
@@ -165,6 +166,9 @@ def build_message(order, status):
         f"👤 Username &amp; ID: <code>{esc(pkxd)}</code>\n")
     if status == "found" and order.get("player_uuid"):
         teks += f"🆔 UUID Pemain: <code>{esc(order['player_uuid'])}</code>\n"
+    if order.get("activity_id"):
+        teks += f"🎮 World UGC: <b>{esc(order.get('ugc_world_name') or '-')}</b>\n"
+        teks += f"🆔 Activity ID: <code>{esc(order['activity_id'])}</code>\n"
     if status in ("not_found", "error") and order.get("uuid_error"):
         teks += f"❌ Keterangan: {esc(order['uuid_error'])}\n"
     teks += (
@@ -194,6 +198,9 @@ def build_message(order, status):
     if status == "found" and order.get("player_uuid"):
         keyboard.append([{"text": "📋 Salin UUID",
                           "copy_text": {"text": order["player_uuid"]}}])
+    if order.get("activity_id"):
+        keyboard.append([{"text": "📋 Salin Activity ID",
+                          "copy_text": {"text": order["activity_id"]}}])
     return teks, {"inline_keyboard": keyboard}
 
 
