@@ -419,8 +419,8 @@ async def main():
     if (hasil['count_sebelum'] is not None
             and hasil['count_sesudah'] is not None):
         naik = hasil['count_sesudah'] - hasil['count_sebelum']
-        print(f"  COUNTER: {'NAIK +' + str(naik) + ' (BERHASIL)'
-              if naik > 0 else 'TIDAK NAIK (GAGAL)'}")
+        status = "NAIK +" + str(naik) + " (BERHASIL)" if naik > 0 else "TIDAK NAIK (GAGAL)"
+        print("  COUNTER: " + status)
     print(f"  RoomEvent diterima: {len(hasil['events'])}")
     for name, hx in hasil["events"]:
         print(f"    - {name}: {hx[:160]}")
