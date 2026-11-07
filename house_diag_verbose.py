@@ -42,65 +42,74 @@ def _safe_close(s):
 
 
 async def diag_like_once(session, bot, target_uuid, idx):
-    """Replika like_house_once dengan log tiap tahap + klasifikasi.
-    Kembalikan (klasifikasi, detail)."""
+    """Replika like_house_once + REALOKASI (maks 2 alokasi per bot).
+    Bila alokasi ke-1 tidak auto-join, tutup soket dan alokasi ulang
+    (instance game server baru) lalu coba lagi. Klasifikasi:
+    sent / sent2 (sukses di alokasi ke-2) / fail-join / fail-isthere-*
+    / fail-login / fail-alloc / fail-tcp."""
     t0 = time.time()
     log = []
 
     def dt():
         return f"{time.time() - t0:.1f}d"
 
-    user_jwt, alloc = await L.login_and_allocate(
-        bot["email"], bot["password"], bot["device_id"], session
-    )
-    if not alloc:
-        log.append(f"[{dt()}] alloc GAGAL")
-        return "fail-alloc", " | ".join(log)
-    log.append(f"[{dt()}] alloc OK")
+    for percobaan in (1, 2):
+        user_jwt, alloc = await L.login_and_allocate(
+            bot["email"], bot["password"], bot["device_id"], session
+        )
+        if not alloc:
+            log.append(f"[{dt()}] alloc#{percobaan} GAGAL")
+            return "fail-alloc", " | ".join(log)
+        log.append(f"[{dt()}] alloc#{percobaan} OK")
 
-    host, port = L.find_host_port(alloc)
-    gsid = alloc.get("gameServerId", "")
-    if not host or not port:
-        return "fail-alloc", " | ".join(log) + f" [{dt()}] host/port kosong"
+        host, port = L.find_host_port(alloc)
+        gsid = alloc.get("gameServerId", "")
+        if not host or not port:
+            return "fail-alloc", " | ".join(log) + f" [{dt()}] host/port kosong"
 
-    s, pid = L.tcp_connect(host, port)
-    if s is None:
-        return "fail-tcp", " | ".join(log) + f" [{dt()}] tcp GAGAL"
-    log.append(f"[{dt()}] tcp OK pid={pid}")
+        s, pid = L.tcp_connect(host, port)
+        if s is None:
+            return "fail-tcp", " | ".join(log) + f" [{dt()}] tcp GAGAL"
+        log.append(f"[{dt()}] tcp#{percobaan} OK pid={pid}")
 
-    reader = P.FrameReader(s)
-    try:
-        s.sendall(L.build_login_frame(user_jwt))
-    except Exception as e:
-        _safe_close(s)
-        return "fail-login", " | ".join(log) + f" [{dt()}] kirim login GAGAL: {e}"
-
-    _jstate = {"room": None, "tbugv": False}
-
-    def _login_pred(fr):
-        t, r = L.scan_login_window([fr])
-        if t:
-            _jstate["tbugv"] = True
-        if r is not None:
-            _jstate["room"] = r
-        return _jstate["room"] is not None
-
-    try:
-        fr, closed = reader.read_until(_login_pred, 4)
-        if closed:
+        reader = P.FrameReader(s)
+        try:
+            s.sendall(L.build_login_frame(user_jwt))
+        except Exception as e:
             _safe_close(s)
-            return "fail-login", " | ".join(log) + f" [{dt()}] koneksi tertutup saat login-window"
-        room = _jstate["room"]
-        if room is not None:
-            log.append(f"[{dt()}] auto-join room={room} tbugv={_jstate['tbugv']}")
-        else:
-            log.append(f"[{dt()}] login-window timeout (tbugv={_jstate['tbugv']}), JOIN manual...")
-            room = L.tcp_join_only(s, gsid)
-            if room is None:
-                _safe_close(s)
-                return "fail-join", " | ".join(log) + f" [{dt()}] JOIN GAGAL (5 ruangan, tak ada JoinedRoom)"
-            log.append(f"[{dt()}] JOIN OK room={room}")
+            return "fail-login", " | ".join(log) + f" [{dt()}] kirim login GAGAL: {e}"
 
+        _jstate = {"room": None, "tbugv": False}
+
+        def _login_pred(fr):
+            t2, r = L.scan_login_window([fr])
+            if t2:
+                _jstate["tbugv"] = True
+            if r is not None:
+                _jstate["room"] = r
+            return _jstate["room"] is not None
+
+        room = None
+        try:
+            fr, closed = reader.read_until(_login_pred, 4)
+            if closed:
+                _safe_close(s)
+                return "fail-login", " | ".join(log) + f" [{dt()}] koneksi tertutup saat login-window"
+            room = _jstate["room"]
+            if room is not None:
+                log.append(f"[{dt()}] auto-join#{percobaan} room={room} tbugv={_jstate['tbugv']}")
+            else:
+                log.append(f"[{dt()}] login-window#{percobaan} timeout (tbugv={_jstate['tbugv']}), tidak auto-join")
+                _safe_close(s)
+                if percobaan == 1:
+                    log.append(f"[{dt()}] REALOKASI ke percobaan 2...")
+                    continue
+                return "fail-join", " | ".join(log) + f" [{dt()}] JOIN GAGAL 2x alokasi"
+        except Exception:
+            _safe_close(s)
+            raise
+
+        # room didapat -> Create + IsThere (hanya jalan bila auto-join)
         def do_is_there():
             frame = L.build_room_event_varint(
                 "like", P.build_like_protobuf(2, target_uuid, LIKE_TYPE_HOUSE)
@@ -146,14 +155,15 @@ async def diag_like_once(session, bot, target_uuid, idx):
                 + ("TIDAK DIJAWAB" if after is None else f"exists={after.get('exists')} err={after.get('error')!r}")
             )
 
+        _safe_close(s)
         if after and after.get("exists") is True:
             H.history_put_house(bot["email"], target_uuid)
-            return "sent", " | ".join(log)
+            return ("sent" if percobaan == 1 else "sent2"), " | ".join(log)
         if not answered:
             return "fail-isthere-noanswer", " | ".join(log)
         return "fail-isthere-false", " | ".join(log)
-    finally:
-        _safe_close(s)
+
+    return "fail-join", " | ".join(log)
 
 
 async def bot_coro(idx, bot, target_uuid):
@@ -169,7 +179,7 @@ async def bot_coro(idx, bot, target_uuid):
             return "fail-exc", f"exception {e!r}"
 
 
-STAGGER = float(os.getenv("DIAG_STAGGER", "1.0"))
+STAGGER = float(os.getenv("DIAG_STAGGER", "0"))
 
 def run_bot(idx, bot, target_uuid, state):
     with state["lock"]:
