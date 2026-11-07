@@ -1,0 +1,51 @@
+name: Register Clan Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      jumlah:
+        description: 'Total bot clan yang dibuat (maks 29 slot)'
+        required: false
+        default: '29'
+      workers:
+        description: 'Paralel workers'
+        required: false
+        default: '10'
+      clan_id:
+        description: 'Clan ID target'
+        required: false
+        default: '8ae19c43-c9f3-4bbd-8da6-ac2e1b6af320'
+      clan_name:
+        description: 'Nama clan'
+        required: false
+        default: 'BiackHat'
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install curl_cffi
+
+      - name: Register + Nickname (Clan)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          JUMLAH: ${{ inputs.jumlah }}
+          WORKERS: ${{ inputs.workers }}
+          NAME_MODE: 'list'
+          CUSTOM_NAMES_FILE: custom_names_clan.txt
+          RUNNER_INDEX: '1'
+          RUNNER_TOTAL: '1'
+          CLAN_TABEL: 'clan_bots'
+          CLAN_ID: ${{ inputs.clan_id }}
+          CLAN_NAME: ${{ inputs.clan_name }}
+        run: python register_clan.py
