@@ -1,0 +1,51 @@
+name: Join Clan Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      jumlah:
+        description: 'Jumlah bot clan yang digabungkan (maks 29)'
+        required: false
+        default: '29'
+      workers:
+        description: 'Paralel workers'
+        required: false
+        default: '6'
+      clan_id:
+        description: 'Clan ID target'
+        required: false
+        default: '8ae19c43-c9f3-4bbd-8da6-ac2e1b6af320'
+      clan_name:
+        description: 'Nama clan'
+        required: false
+        default: 'BiackHat'
+      join_world:
+        description: 'Coba masuk world dulu (1) atau langsung JoinClan (0)'
+        required: false
+        default: '1'
+
+jobs:
+  join:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install curl_cffi
+
+      - name: Join Clan Massal
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          JUMLAH: ${{ inputs.jumlah }}
+          WORKERS: ${{ inputs.workers }}
+          CLAN_ID: ${{ inputs.clan_id }}
+          CLAN_NAME: ${{ inputs.clan_name }}
+          JOIN_WORLD: ${{ inputs.join_world }}
+        run: python clan_join.py
