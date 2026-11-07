@@ -10,9 +10,9 @@ on:
         required: true
         default: "500"
       max_paralel:
-        description: "Worker bersamaan per leg (maks 6)"
+        description: "Worker bersamaan per leg (maks 8)"
         required: false
-        default: "6"
+        default: "8"
       bot_type:
         description: "Tipe bot: accounts atau named_bots"
         required: false
@@ -47,7 +47,6 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 2  # Batasi 2 runner bersamaan agar backend game tidak drop paket
       matrix:
         partisi: ${{ fromJSON(needs.siapkan.outputs.partisi) }}
     steps:
