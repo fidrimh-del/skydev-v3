@@ -169,12 +169,17 @@ async def bot_coro(idx, bot, target_uuid):
             return "fail-exc", f"exception {e!r}"
 
 
+STAGGER = float(os.getenv("DIAG_STAGGER", "1.0"))
+
 def run_bot(idx, bot, target_uuid, state):
     with state["lock"]:
         if state["sent"] >= state["jumlah"]:
             return "skip"
         state["tried"].add(bot["email"])
-    time.sleep(random.uniform(0.6, 2.0))
+    if STAGGER > 0:
+        time.sleep(idx * STAGGER)
+    else:
+        time.sleep(random.uniform(0.6, 2.0))
     t0 = time.time()
     try:
         klas, detail = asyncio.run(bot_coro(idx, bot, target_uuid))
