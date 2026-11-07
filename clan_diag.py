@@ -246,23 +246,72 @@ def decode_room_event(frame):
         return None, None
 
 
+async def login_for_activity(session, email, password, device_id,
+                             activity_id):
+    """Login + alokasi ACTIVITY (pola activity_standby.py).
+    Kembalikan (jwt, host, port, gsid) atau (None, None, None, None)."""
+    jwt, _body = await L.login_and_allocate(email, password, device_id,
+                                            session)
+    if not jwt:
+        return None, None, None, None
+    import json as _json
+    for attempt, extra in enumerate([
+            {"userToken": jwt,
+             "gameServerProtocolVersion": L.GAME_PROTOCOL,
+             "isPrivate": False, "activityId": activity_id},
+            {"userToken": jwt,
+             "gameServerProtocolVersion": L.GAME_PROTOCOL,
+             "isPrivate": False, "activityId": activity_id,
+             "datacenterId": "blr1"},
+    ], 1):
+        b = _json.dumps(extra, separators=(",", ":")).encode("utf-8")
+        try:
+            r = await session.post(L.LOBBY_URL + "/lobby/allocation",
+                                   data=b, headers=L.HEADERS_BASE.copy(),
+                                   timeout=20)
+            body = r.json()
+        except Exception as e:
+            print(f"[-] Alokasi activity percobaan {attempt} gagal: {e}")
+            continue
+        host, port = L.find_host_port(body)
+        gsid = body.get("gameServerId", "") if isinstance(body, dict) else ""
+        print(f"[*] Alokasi activity percobaan {attempt}: host={host} "
+              f"port={port} gsid={'ada' if gsid else 'KOSONG'}")
+        if host and port:
+            return jwt, host, port, gsid
+    return jwt, None, None, None
+
+
 async def clan_once(session, email, password, device_id, clan_name,
-                    clan_id_known=""):
+                    clan_id_known="", activity_id=""):
     """Satu percobaan penuh. Kembalikan dict hasil (untuk HASIL)."""
     hasil = {"email": email, "clan_name": clan_name,
              "current_clan": None, "search_results": [],
              "target_clan_id": None, "join_sent": False,
-             "join_response": [], "events": []}
-    user_jwt, alloc = await L.login_and_allocate(email, password, device_id,
-                                                 session)
-    if not alloc:
-        print("[!] login/alokasi gagal.")
-        return hasil
-    host, port = L.find_host_port(alloc)
-    if not host or not port:
-        print("[!] host/port tidak ketemu di allocation.")
-        return hasil
-    print(f"[*] alokasi OK: {host}:{port}")
+             "join_response": [], "events": [], "world_joined": False,
+             "room": None}
+    if activity_id:
+        # Alur JOIN WORLD dulu (hipotesis: ClanMechanic hanya aktif
+        # bila bot sudah masuk world).
+        user_jwt, host, port, gsid = await login_for_activity(
+            session, email, password, device_id, activity_id)
+        if not host or not port:
+            print("[!] alokasi activity gagal (tidak ada host/port).")
+            return hasil
+        print(f"[*] alokasi activity OK: {host}:{port} gsid="
+              f"{'ada' if gsid else 'KOSONG'}")
+    else:
+        user_jwt, alloc = await L.login_and_allocate(email, password,
+                                                     device_id, session)
+        if not alloc:
+            print("[!] login/alokasi gagal.")
+            return hasil
+        host, port = L.find_host_port(alloc)
+        gsid = ""
+        if not host or not port:
+            print("[!] host/port tidak ketemu di allocation.")
+            return hasil
+        print(f"[*] alokasi OK: {host}:{port}")
     sock, _pid = L.tcp_connect(host, port)
     if sock is None:
         print("[!] TCP connect gagal.")
@@ -300,13 +349,44 @@ async def clan_once(session, email, password, device_id, clan_name,
     if closed:
         print("[!] koneksi tertutup saat tunggu login.")
         return hasil
+    room = None
     if got is not None and _is_tbugv(got):
         print("[*] tbugv diterima — observasi 1 dtk lagi.")
         time.sleep(1)
     elif got is not None:
-        print("[*] JoinedRoom diterima.")
+        print("[*] JoinedRoom diterima (auto-join).")
+        room = True
     else:
         print("[*] timeout jendela login (koneksi hidup) — lanjut kirim.")
+
+    # Kalau join world: pastikan masuk room (manual join bila perlu),
+    # lalu kirim init + activity/get seperti standby.
+    if activity_id:
+        if not room and gsid:
+            print("[*] tidak auto-join, coba tcp_join_only ...")
+            try:
+                room = L.tcp_join_only(sock, gsid)
+            except Exception as exc:
+                print(f"[!] tcp_join_only gagal: {exc}")
+                room = None
+            print(f"[*] tcp_join_only: room={room}")
+        hasil["room"] = room
+        hasil["world_joined"] = bool(room)
+        if room:
+            try:
+                for name in ["init_pos", "init_day_night", "preset",
+                             "fetch_events"]:
+                    sock.sendall(L.build_room_event_varint(name, b""))
+                time.sleep(0.3)
+                sock.sendall(L.build_room_event_varint("activity/get", b""))
+                print("[*] init + activity/get terkirim.")
+            except Exception as exc:
+                print(f"[!] kirim init gagal: {exc}")
+            # Beri waktu server memproses masuk world sebelum clan.
+            time.sleep(2)
+        else:
+            print("[!] GAGAL masuk world (room=None) — lanjut kirim clan "
+                  "saja untuk perbandingan.")
 
     def kirim(data_pb, label):
         print(f"[*] kirim {label} via RoomEvent '{CLAN_CMD}' ...")
@@ -400,23 +480,31 @@ async def main():
     ap.add_argument("--clan-id", default=os.getenv("CLAN_ID", ""),
                     help="Clan ID (dari log mod). Kalau diisi, SearchClan "
                          "dilewati dan langsung JoinClan by ID.")
+    ap.add_argument("--activity-id", default=os.getenv("ACTIVITY_ID", ""),
+                    help="Activity ID world untuk JOIN WORLD dulu sebelum "
+                         "clan (hipotesis: ClanMechanic hanya aktif di world). "
+                         "Kosong = tanpa join world (alur lama).")
     args = ap.parse_args()
     if not args.email or not args.password:
         print("[!] email/password bot wajib diisi "
               "(input workflow / env CLAN_EMAIL & CLAN_PASSWORD).")
         return 1
     print(f"[*] Diag Join Clan — bot {args.email} | clan '{args.clan}'"
-          + (f" | clanId '{args.clan_id}'" if args.clan_id else ""))
+          + (f" | clanId '{args.clan_id}'" if args.clan_id else "")
+          + (f" | join world '{args.activity_id}'" if args.activity_id
+             else ""))
     L.QUIET = False
     t0 = time.time()
     async with L.AsyncSession(impersonate="chrome110",
                               verify=False) as session:
         hasil = await clan_once(
             session, args.email, args.password, args.device_id,
-            args.clan, args.clan_id)
+            args.clan, args.clan_id, args.activity_id)
     print("=" * 56)
     print("HASIL JOIN CLAN DIAG")
     print(f"  Bot: {hasil['email']} | clan target: {hasil['clan_name']}")
+    print(f"  World joined: {hasil.get('world_joined')} | "
+          f"room: {hasil.get('room')}")
     print(f"  Hasil pencarian ({len(hasil['search_results'])} clan):")
     for c in hasil["search_results"]:
         print(f"    - {c.get('name')} id={c.get('clan_id')} "
