@@ -1,0 +1,47 @@
+name: DIAG Crazy Run (1 bot)
+
+# Diag sekali jalan (bukan produksi): 1 bot, login -> Join Crazy Run
+# -> Finish -> baca RunCount -> Leave. Mencatat SEMUA RoomEvent mentah.
+# Dibuat 2026-11-08 atas permintaan Bartes. Jangan dipakai untuk order.
+# Kredensial bot via input (akun Gmail mandiri, TIDAK ada di panel DB).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot (akun Crazy Run)"
+        required: true
+        default: "pkxdshop.id@gmail.com"
+      password:
+        description: "Password bot (ROTASI sesudah tes)"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = bawaan probe)"
+        required: false
+        default: ""
+      command:
+        description: "RoomEvent command Crazy Run (belum terkonfirmasi dari dump)"
+        required: false
+        default: "crazy_run"
+      run_time:
+        description: "Waktu finish yang dikirim (detik)"
+        required: false
+        default: "45"
+      wait_start:
+        description: "Tunggu Start sesudah Join (detik)"
+        required: false
+        default: "10"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u crazyrun_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --command "${{ inputs.command }}" --time "${{ inputs.run_time }}" --wait-start "${{ inputs.wait_start }}"
+        env:
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
