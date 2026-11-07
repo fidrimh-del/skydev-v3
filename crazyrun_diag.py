@@ -266,9 +266,30 @@ async def crazyrun_once(session, email, password, device_id, command,
             return
         hasil["events"].append((name, data.hex() if data else ""))
         vlog(f"[evt] RoomEvent name={name!r} data_hex={data.hex() if data else ''}")
-        if data:
-            for fno, wt, v in parse_protobuf_fields(data):
-                vlog(f"      field {fno} ({wt}): {v!r}")
+        if not data:
+            return
+        fields = parse_protobuf_fields(data)
+        for fno, wt, v in fields:
+            vlog(f"      field {fno} ({wt}): {v!r}")
+        # Tangkap RunCount/energi dari crazy-run-count (f2=energi float,
+        # f3=RunCount varint). Yang pertama = sebelum, kedua = sesudah.
+        if name == "crazy-run-count":
+            d = dict((f, v) for f, _w, v in fields)
+            if 2 in d and 3 in d:
+                if hasil["count_sebelum"] is None:
+                    hasil["energy_sebelum"] = d[2]
+                    hasil["count_sebelum"] = d[3]
+                    print(f"[+] Count SEBELUM: RunCount={d[3]} energi={d[2]}")
+                else:
+                    hasil["energy_sesudah"] = d[2]
+                    hasil["count_sesudah"] = d[3]
+                    print(f"[+] Count SESUDAH: RunCount={d[3]} energi={d[2]}")
+        # Tangkap RunCount dari crazy-run-result (f9=RunCount, f7=RunTime).
+        if name == "crazy-run-result":
+            d = dict((f, v) for f, _w, v in fields)
+            hasil["player_result"] = {"run_count": d.get(9),
+                                      "run_time": d.get(7)}
+            print(f"[+] PlayerResult: RunCount={d.get(9)} RunTime={d.get(7)}")
 
     # --- tunggu jendela login (pola WAIT-LOGIN): tbugv atau JoinedRoom ---
     print("[*] tunggu jendela login (tbugv/JoinedRoom, maks 3 dtk)...")
@@ -312,13 +333,17 @@ async def crazyrun_once(session, email, password, device_id, command,
     if not kirim(EV_JOIN, build_cr_request(EV_JOIN), "JoinGame"):
         return hasil
     frames = tunggu_respons(6, "JoinGame")
-    # Cari GameId dari respons Join (string field yang mirip UUID).
+    # GameId HANYA dari event 'crazy-run-joined' (field 2 = GameId).
+    # JANGAN dari event lain: data biner tbulv bisa ter-decode sebagai
+    # string panjang dan tertangkap sebagai GameId palsu (run 42402122640:
+    # GameId sampah '08cab5e1...' -> Finish tidak dihitung, RunCount
+    # tetap 5 padahal energi berkurang).
     for f in frames:
         name, data = decode_room_event(f)
-        if name is None or not data:
+        if name != "crazy-run-joined" or not data:
             continue
         for fno, wt, v in parse_protobuf_fields(data):
-            if wt == "string/bytes" and isinstance(v, str) and len(v) >= 30:
+            if fno == 2 and wt == "string/bytes" and isinstance(v, str):
                 hasil["game_id"] = v
                 print(f"[+] GameId terdeteksi: {v}")
                 break
@@ -386,14 +411,21 @@ async def main():
     print("HASIL CRAZY RUN DIAG")
     print(f"  Bot: {hasil['email']} | command: {hasil['command']}")
     print(f"  GameId: {hasil['game_id']}")
+    print(f"  RunCount SEBELUM: {hasil['count_sebelum']} "
+          f"(energi {hasil['energy_sebelum']})")
+    print(f"  RunCount SESUDAH: {hasil['count_sesudah']} "
+          f"(energi {hasil['energy_sesudah']})")
+    print(f"  PlayerResult: {hasil['player_result']}")
+    if (hasil['count_sebelum'] is not None
+            and hasil['count_sesudah'] is not None):
+        naik = hasil['count_sesudah'] - hasil['count_sebelum']
+        print(f"  COUNTER: {'NAIK +' + str(naik) + ' (BERHASIL)'
+              if naik > 0 else 'TIDAK NAIK (GAGAL)'}")
     print(f"  RoomEvent diterima: {len(hasil['events'])}")
     for name, hx in hasil["events"]:
         print(f"    - {name}: {hx[:160]}")
     print(f"  Waktu total: {time.time() - t0:.0f} detik")
     print("=" * 56)
-    print("CATATAN: RunCount (counter) dibaca dari respons Count / "
-          "PlayerResult di log di atas. Bandingkan Count-sebelum vs "
-          "Count-sesudah / RunCount di PlayerResult.")
     return 0
 
 
