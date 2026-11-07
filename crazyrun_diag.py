@@ -239,21 +239,22 @@ async def crazyrun_once(session, email, password, device_id, command,
              "energy_sebelum": None, "energy_sesudah": None,
              "game_id": None, "can_start": None,
              "player_result": None, "events": []}
-    alloc = await L.login_and_allocate(email, password, device_id, session)
+    user_jwt, alloc = await L.login_and_allocate(email, password, device_id,
+                                                 session)
     if not alloc:
         print("[!] login/alokasi gagal.")
         return hasil
-    host, port, token = alloc
+    host, port = L.find_host_port(alloc)
+    if not host or not port:
+        print("[!] host/port tidak ketemu di allocation.")
+        return hasil
     print(f"[*] alokasi OK: {host}:{port}")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(10)
-    try:
-        sock.connect((host, port))
-    except Exception as exc:
-        print(f"[!] TCP connect gagal: {exc}")
+    sock, _pid = L.tcp_connect(host, port)
+    if sock is None:
+        print("[!] TCP connect gagal.")
         return hasil
     try:
-        sock.sendall(L.build_login_frame(token))
+        sock.sendall(L.build_login_frame(user_jwt))
     except Exception as exc:
         print(f"[!] kirim login frame gagal: {exc}")
         return hasil
