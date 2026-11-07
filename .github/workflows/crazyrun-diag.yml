@@ -21,11 +21,11 @@ on:
       command:
         description: "RoomEvent command Crazy Run (belum terkonfirmasi dari dump)"
         required: false
-        default: "crazy_run"
+        default: "crazy-run"
       run_time:
         description: "Waktu finish yang dikirim (detik)"
         required: false
-        default: "45"
+        default: "12"
       wait_start:
         description: "Tunggu Start sesudah Join (detik)"
         required: false
