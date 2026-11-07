@@ -20,6 +20,11 @@ on:
         required: false
         default: 'BiackHat'
 
+      names_file:
+        description: 'File daftar nama'
+        required: false
+        default: 'custom_names_clan.txt'
+
 jobs:
   register:
     runs-on: ubuntu-latest
@@ -42,7 +47,7 @@ jobs:
           JUMLAH: ${{ inputs.jumlah }}
           WORKERS: ${{ inputs.workers }}
           NAME_MODE: 'list'
-          CUSTOM_NAMES_FILE: custom_names_clan.txt
+          CUSTOM_NAMES_FILE: ${{ inputs.names_file }}
           RUNNER_INDEX: '1'
           RUNNER_TOTAL: '1'
           CLAN_TABEL: 'clan_bots'
