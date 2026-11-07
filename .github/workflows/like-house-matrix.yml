@@ -1,9 +1,3 @@
-# SKYDEV Like Rumah Matrix (Paralel) — kirim like rumah via N runner
-# paralel, masing-masing dengan partisi bot sendiri (rotasi IP).
-#
-# Revisi: Default max_paralel diset ke 6 agar antrean join instance
-# room rumah mengalir lancar (rolling entry) dan bebas fail-noanswer.
-
 name: SKYDEV Like Rumah Matrix (Paralel)
 on:
   workflow_dispatch:
@@ -16,7 +10,7 @@ on:
         required: true
         default: "500"
       max_paralel:
-        description: "Worker bersamaan per leg (maks 6 untuk stabilitas room TCP)"
+        description: "Worker bersamaan per leg (maks 6)"
         required: false
         default: "6"
       bot_type:
@@ -53,6 +47,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
+      max-parallel: 2  # Batasi 2 runner bersamaan agar backend game tidak drop paket
       matrix:
         partisi: ${{ fromJSON(needs.siapkan.outputs.partisi) }}
     steps:
