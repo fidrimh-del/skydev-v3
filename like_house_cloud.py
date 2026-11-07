@@ -78,19 +78,14 @@ def parse_args(argv):
 
 
 def decide_exit(sent, jumlah):
+    # SUKSES 100% (2026-11-07, perintah Bartes): sukses hanya bila
+    # terkirim >= diminta. Toleransi 80% DIHAPUS — kekurangan TIDAK
+    # lagi dianggap sukses (job gagal, exit 1) supaya tidak ada
+    # customer yang komplain karena kurang. Kelebihan tidak masalah.
     if jumlah <= 0:
         return 0
     if sent >= jumlah:
         return 0
-
-    persentase = (sent / jumlah) * 100
-    if persentase >= 80.0:
-        print(
-            f"[+] Toleransi tercapai: {sent}/{jumlah} ({persentase:.1f}%). Status"
-            " Runner: HIJAU."
-        )
-        return 0
-
     return 1
 
 
