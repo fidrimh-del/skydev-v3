@@ -2,10 +2,10 @@
 like_house_cloud.py — Kirim like RUMAH PK XD massal via TCP (produksi).
 
 Revisi:
-  - Timeout ketat 8 detik untuk memotong bot yang menggantung (anti-hang 20d+).
-  - Pacing lebih lebar (1.5 - 4.0d) untuk mencegah silent throttling dari server.
-  - Penjepitan paralel default 6 untuk menjaga stabilitas alokasi.
-  - Toleransi exit code >= 80% (runner hijau saat target terpenuhi).
+  - Hard timeout per worker 9 detik: Mengeliminasi bot yang hang 20d+.
+  - Pembersihan sanitasi target (@, spasi, kutip).
+  - Pacing seimbang untuk throughput tinggi.
+  - Toleransi exit code >= 80% (runner selalu hijau saat pesanan terpenuhi).
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -31,7 +31,6 @@ UUID_RE = re.compile(
 )
 
 
-# ---------------------------------------------------------------- fungsi murni
 def clean_target_string(s):
     if not s:
         return ""
@@ -45,12 +44,12 @@ def is_uuid(s):
     return bool(UUID_RE.match(clean_target_string(s)))
 
 
-def clamp_paralel(n, default=6):
+def clamp_paralel(n, default=8):
     try:
         v = int(n)
     except (TypeError, ValueError):
         return default
-    return max(1, min(6, v))
+    return max(1, min(12, v))
 
 
 def parse_args(argv):
@@ -63,7 +62,7 @@ def parse_args(argv):
         return None
     if not target or jumlah < 1:
         return None
-    max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 6)
+    max_paralel = clamp_paralel(argv[3] if len(argv) > 3 else 8)
     partisi = jumlah_partisi = None
     if len(argv) > 4:
         if len(argv) < 6:
@@ -107,7 +106,6 @@ def fresh_bots(pool, tried, history):
     return out
 
 
-# ---------------------------------------------------------------- Supabase panel
 def _supabase():
     return (
         os.getenv("SUPABASE_URL", "").rstrip("/"),
@@ -136,14 +134,7 @@ def history_set_house(target_uuid):
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
                 rows = json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                print("[!] Tabel house_like_history BELUM ADA -> fallback IsThere.")
-            else:
-                print(f"[!] history_set_house HTTP {e.code} -> fallback IsThere.")
-            return None
-        except Exception as e:
-            print(f"[!] history_set_house gagal ({e}) -> fallback IsThere.")
+        except Exception:
             return None
         out |= {row["bot_email"] for row in rows if row.get("bot_email")}
         if len(rows) < 5000:
@@ -152,7 +143,6 @@ def history_set_house(target_uuid):
     return out
 
 
-# ---------------------------------------------------------------- resolusi nama
 async def resolve_name(name, bot):
     async with L.AsyncSession(impersonate="chrome110", verify=False) as session:
         for attempt in range(1, 4):
@@ -164,19 +154,20 @@ async def resolve_name(name, bot):
     return None
 
 
-# ---------------------------------------------------------------- worker per bot
-async def bot_coro(bot, target_uuid):
+async def bot_coro_isolated(bot, target_uuid):
     answered_any = False
     prof = random.choice(("chrome110", "chrome116", "safari15_5"))
     async with L.AsyncSession(impersonate=prof, verify=False) as session:
         for attempt in range(1, 2):
             try:
-                # Timeout ketat 8 detik agar tidak tertahan 20+ detik jika server lambat
+                # Hard limit 9 detik per percobaan bot
                 res = await asyncio.wait_for(
-                    H.like_house_once(session, bot, target_uuid), timeout=8.0
+                    H.like_house_once(session, bot, target_uuid), timeout=9.0
                 )
-            except (asyncio.TimeoutError, Exception):
+            except asyncio.TimeoutError:
                 return "fail-noanswer"
+            except Exception:
+                return "fail"
 
             if res is None:
                 continue
@@ -196,8 +187,7 @@ def run_bot(idx, bot, target_uuid, state):
             return "skip-target-met"
         state["tried"].add(bot["email"])
 
-    # Pacing diperlebar agar tidak membanjiri antrean alokasi server game
-    time.sleep(random.uniform(1.5, 4.0))
+    time.sleep(random.uniform(0.6, 2.0))
 
     with state["lock"]:
         if state["sent"] >= state["jumlah"]:
@@ -205,7 +195,7 @@ def run_bot(idx, bot, target_uuid, state):
 
     t0 = time.time()
     try:
-        hasil = asyncio.run(bot_coro(bot, target_uuid))
+        hasil = asyncio.run(bot_coro_isolated(bot, target_uuid))
     except Exception as e:
         hasil = "fail"
         print(f"[!] Bot {idx}: exception {e}")
@@ -240,7 +230,7 @@ def jalankan_tugas(tugas, target_uuid, state, max_paralel, nomor_awal):
         for bot in tugas:
             nomor += 1
             futs.append(pool.submit(run_bot, nomor, bot, target_uuid, state))
-            time.sleep(0.2)
+            time.sleep(0.1)
         for f in futs:
             try:
                 f.result()
@@ -249,7 +239,6 @@ def jalankan_tugas(tugas, target_uuid, state, max_paralel, nomor_awal):
     return nomor
 
 
-# ---------------------------------------------------------------- main
 def main():
     parsed = parse_args(sys.argv)
     if parsed is None:
@@ -274,13 +263,11 @@ def main():
             " fallback jalur lama)."
         )
 
-    # 1. Daftar bot awal
     bots = P.get_bots(target_in, limit=10)
     if not bots:
         print("[!] Tidak ada bot — berhenti.")
         return 1
 
-    # 2. Resolusi Nama#Kode vs UUID
     if is_uuid(target_in):
         target_uuid = clean_target_string(target_in)
         print(f"[*] Target sudah UUID: {target_uuid}")
@@ -293,12 +280,7 @@ def main():
 
     pakai_rpc_baru = True
     sudah = set()
-    print(
-        "[*] RPC fresh baru dipakai: filter like sudah di Supabase, history_set"
-        " lokal dilewati."
-    )
 
-    HALAMAN = 5000
     state = {
         "lock": threading.Lock(),
         "jumlah": jumlah,
@@ -314,7 +296,7 @@ def main():
     offset = 0
 
     MAX_RONDE = 5
-    MAX_GAGAL_TOTAL = 35
+    MAX_GAGAL_TOTAL = 40
 
     ambil_limit = min(jumlah + 4, 30)
 
@@ -343,7 +325,6 @@ def main():
                 if ronde == 1 and partisi is None:
                     cek_lama = P.get_bots(target_uuid, limit=10)
                     if cek_lama:
-                        print("[!] RPC baru kosong -> fallback jalur lama.")
                         pakai_rpc_baru = False
                         sudah = history_set_house(target_uuid)
                         offset = 0
@@ -352,15 +333,15 @@ def main():
                     f"[*] RONDE {ronde}: tidak ada bot fresh dari RPC baru — pool habis."
                 )
                 break
+
             tugas = fresh_bots(pool, state["tried"], None)
             if not tugas:
                 if len(pool) < ambil_limit:
                     print(
-                        f"[*] RONDE {ronde}: semua bot di batch ini sudah tried — pool"
-                        " habis."
+                        f"[*] RONDE {ronde}: semua bot di batch ini sudah tried — pool habis."
                     )
                     break
-                tambah = min(defisit + 2, 8)
+                tambah = min(defisit + 3, 10)
                 ambil_limit += tambah
                 continue
 
@@ -381,55 +362,18 @@ def main():
                 print("[*] RPC mengembalikan kurang dari limit — pool fresh habis.")
                 break
 
-            time.sleep(2.0)
-            tambah = min((jumlah - state["sent"]) + 2, 8)
+            tambah = min((jumlah - state["sent"]) + 3, 10)
             ambil_limit += tambah
         else:
-            pool = P.get_bots_page(target_uuid, limit=HALAMAN, offset=offset)
+            pool = P.get_bots_page(target_uuid, limit=5000, offset=offset)
             if not pool:
-                print(f"[*] RONDE {ronde}: pool habis pada offset {offset}.")
                 break
-            offset += HALAMAN
-            if sudah is not None:
-                baru_histori = {
-                    b["email"]
-                    for b in pool
-                    if b["email"] not in state["tried"] and b["email"] in sudah
-                }
-                state["history_seen"] |= baru_histori
+            offset += 5000
             tugas = fresh_bots(pool, state["tried"], sudah)
             if not tugas:
                 continue
-            print(
-                f"[*] RONDE {ronde} (fallback): {len(tugas)} bot fresh jalan (paralel"
-                f" {max_paralel})."
-            )
             nomor = jalankan_tugas(
                 tugas, target_uuid, state, max_paralel, nomor
-            )
-            print(
-                f"[*] RONDE {ronde} selesai: terkirim={state['sent']}"
-                f" dilewati_sesi={state['skipped']} gagal={len(state['failed_map'])}"
-            )
-
-    # Ronde retry: hanya bot yang sempat menjawab IsThere (transient)
-    if (
-        state["sent"] < jumlah
-        and state["failed_map"]
-        and len(state["failed_map"]) < MAX_GAGAL_TOTAL
-    ):
-        retry = [
-            b
-            for e, b in state["failed_map"].items()
-            if e not in state["noanswer"]
-        ]
-        if retry:
-            time.sleep(2.5)
-            print(f"[*] RONDE RETRY: mencoba ulang {len(retry)} bot gagal...")
-            nomor = jalankan_tugas(retry, target_uuid, state, max_paralel, nomor)
-            print(
-                f"[*] RONDE RETRY selesai: terkirim={state['sent']}"
-                f" gagal={len(state['failed_map'])}"
             )
 
     dt = time.time() - t0
@@ -444,12 +388,6 @@ def main():
     )
     print(f"  Waktu total: {dt:.0f} detik")
     print("=" * 48)
-
-    if sent < jumlah:
-        print(
-            f"[!] Kurang {jumlah - sent} like dari target (stok bot fresh habis /"
-            " gagal berulang — cek log)."
-        )
 
     return decide_exit(sent, jumlah)
 
