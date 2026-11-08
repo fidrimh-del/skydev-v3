@@ -29,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       legs: ${{ steps.hitung.outputs.legs }}
+      legs_count: ${{ steps.hitung.outputs.legs_count }}
     steps:
       - id: hitung
         run: |
@@ -39,7 +40,8 @@ jobs:
           if [ "$LEGS" -lt 1 ]; then LEGS=1; fi
           ARR=$(python3 -c "import json; print(json.dumps(list(range($LEGS))))")
           echo "legs=$ARR" >> "$GITHUB_OUTPUT"
-          echo "legs=$ARR (jumlah=$JUMLAH)"
+          echo "legs_count=$LEGS" >> "$GITHUB_OUTPUT"
+          echo "legs=$ARR count=$LEGS (jumlah=$JUMLAH)"
 
   crazyrun:
     needs: siapkan
@@ -70,5 +72,5 @@ jobs:
           RUN_TIME: ${{ inputs.run_time }}
           CLAN_ID: ${{ inputs.clan_id }}
           PARTISI: ${{ matrix.partisi }}
-          TOTAL_PARTISI: ${{ strategy.job-total }}
+          TOTAL_PARTISI: ${{ needs.siapkan.outputs.legs_count }}
         run: python crazyrun_clan.py
