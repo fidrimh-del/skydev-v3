@@ -1,0 +1,51 @@
+name: Crazy Run Clan Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      jumlah:
+        description: 'Jumlah bot clan yang main (maks 29)'
+        required: false
+        default: '29'
+      loops:
+        description: 'Berapa kali loop main Crazy Run per bot (maks ~6, batas energi)'
+        required: false
+        default: '1'
+      workers:
+        description: 'Paralel workers'
+        required: false
+        default: '6'
+      run_time:
+        description: 'Waktu finish per lomba (detik)'
+        required: false
+        default: '12'
+      clan_id:
+        description: 'Clan ID (filter baca clan_bots)'
+        required: false
+        default: '8ae19c43-c9f3-4bbd-8da6-ac2e1b6af320'
+
+jobs:
+  crazyrun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install curl_cffi
+
+      - name: Crazy Run Massal
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          JUMLAH: ${{ inputs.jumlah }}
+          LOOPS: ${{ inputs.loops }}
+          WORKERS: ${{ inputs.workers }}
+          RUN_TIME: ${{ inputs.run_time }}
+          CLAN_ID: ${{ inputs.clan_id }}
+        run: python crazyrun_clan.py
