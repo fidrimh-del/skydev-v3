@@ -1,0 +1,74 @@
+name: Crazy Run Clan Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      jumlah:
+        description: 'Jumlah bot clan yang main (maks 29)'
+        required: false
+        default: '29'
+      loops:
+        description: 'Berapa kali loop main Crazy Run per bot'
+        required: false
+        default: '1'
+      workers:
+        description: 'Paralel workers per leg'
+        required: false
+        default: '6'
+      run_time:
+        description: 'Waktu finish per lomba (detik)'
+        required: false
+        default: '12'
+      clan_id:
+        description: 'Clan ID (filter baca clan_bots)'
+        required: false
+        default: '8ae19c43-c9f3-4bbd-8da6-ac2e1b6af320'
+
+jobs:
+  siapkan:
+    runs-on: ubuntu-latest
+    outputs:
+      legs: ${{ steps.hitung.outputs.legs }}
+    steps:
+      - id: hitung
+        run: |
+          JUMLAH="${{ inputs.jumlah }}"
+          # tiap leg ~6 bot, maks 5 leg (29 bot -> 5 leg)
+          LEGS=$(( (JUMLAH + 5) / 6 ))
+          if [ "$LEGS" -gt 5 ]; then LEGS=5; fi
+          if [ "$LEGS" -lt 1 ]; then LEGS=1; fi
+          ARR=$(python3 -c "import json; print(json.dumps(list(range($LEGS))))")
+          echo "legs=$ARR" >> "$GITHUB_OUTPUT"
+          echo "legs=$ARR (jumlah=$JUMLAH)"
+
+  crazyrun:
+    needs: siapkan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        partisi: ${{ fromJson(needs.siapkan.outputs.legs) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install curl_cffi
+
+      - name: Crazy Run Massal (leg ${{ matrix.partisi }})
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          JUMLAH: ${{ inputs.jumlah }}
+          LOOPS: ${{ inputs.loops }}
+          WORKERS: ${{ inputs.workers }}
+          RUN_TIME: ${{ inputs.run_time }}
+          CLAN_ID: ${{ inputs.clan_id }}
+          PARTISI: ${{ matrix.partisi }}
+          TOTAL_PARTISI: ${{ strategy.job-total }}
+        run: python crazyrun_clan.py
