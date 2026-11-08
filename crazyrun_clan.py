@@ -606,9 +606,29 @@ async def main():
     async def _run(i, bot):
         async with sem:
             try:
-                return await crazyrun_satu_bot(
+                # Stagger: sebar start bot dalam satu leg supaya Join
+                # tidak menumpuk bersamaan di satu IP (server membatasi
+                # Join serentak; 1 bot gagal per leg di run 42431603771
+                # karena 'tanpa GameId').
+                await asyncio.sleep((i % args.workers) * 2)
+                res = await crazyrun_satu_bot(
                     i, len(bots), bot, args.command, args.run_time,
                     args.wait_start, args.loops, args.max_retry)
+                # Bot-level retry: kalau bot gagal total, coba sekali
+                # lagi dari awal (login baru + koneksi TCP baru) setelah
+                # jeda 5 dtk — koneksi segar sering memperbaiki Join
+                # yang ditolak server.
+                if not res["ok"] and res["loops_done"] < args.loops:
+                    log(f"[{i}/{len(bots)}] {bot.get('nickname') or ''}: "
+                        f"retry bot (percobaan ke-2) setelah 5 dtk...")
+                    await asyncio.sleep(5)
+                    res2 = await crazyrun_satu_bot(
+                        i, len(bots), bot, args.command, args.run_time,
+                        args.wait_start, args.loops, args.max_retry)
+                    # Pakai hasil terbaik (loop terbanyak).
+                    if res2["loops_done"] > res["loops_done"]:
+                        res = res2
+                return res
             except Exception as exc:
                 log(f"[{i}/{len(bots)}] {bot.get('nickname') or ''}: "
                     f"exception ({type(exc).__name__}).")
