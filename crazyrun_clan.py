@@ -313,7 +313,14 @@ def tcp_crazyrun_loops(jwt, host, port, command, run_time, wait_start,
     out = {"loops_done": 0, "runcount_awal": None, "runcount_akhir": None,
            "energy_awal": None, "energy_akhir": None,
            "gagal": [], "error": ""}
-    sock, _pid = L.tcp_connect(host, port)
+    # TCP connect dengan retry (koneksi kadang ditolak sesaat).
+    sock = None
+    for percobaan in range(1, 4):
+        sock, _pid = L.tcp_connect(host, port)
+        if sock is not None:
+            break
+        log(f"    tcp_connect percobaan {percobaan} gagal, coba lagi...")
+        time.sleep(2)
     if sock is None:
         out["error"] = "tcp_connect"
         return out
