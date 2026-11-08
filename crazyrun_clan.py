@@ -394,12 +394,13 @@ def tcp_crazyrun_loops(jwt, host, port, command, run_time, wait_start,
         for attempt in range(1, max_retry + 1):
             state["game_id"] = None
             state["player_result"] = False
-            # JoinGame
+            # JoinGame — drain 10 dtk (server bisa lambat membalas
+            # 'crazy-run-joined' saat banyak bot join bersamaan).
             if not kirim(EV_JOIN, build_cr_request(EV_JOIN), "JoinGame"):
                 out["gagal"].append(f"loop{loop_i} kirim Join gagal")
                 break
             # GameId HANYA dari 'crazy-run-joined' f2.
-            frames = fr.drain(6)
+            frames = fr.drain(10)
             gid = None
             for f in frames:
                 _catat(f)
@@ -465,6 +466,22 @@ def tcp_crazyrun_loops(jwt, host, port, command, run_time, wait_start,
             log(f"    loop {loop_i}/{loops}: BERHASIL "
                 f"(RunCount={out['runcount_akhir']}).")
         else:
+            # Cek false-negative: kadang lomba SEBENARNYA terhitung
+            # (RunCount naik) tapi konfirmasi (PlayerResult / Count)
+            # tidak tertangkap dalam drain. Kirim Count terakhir:
+            # kalau RunCount naik dari sebelum loop, anggap BERHASIL.
+            if kirim(EV_COUNT, build_cr_request(EV_COUNT), "Count-cek"):
+                drain_cat(4)
+                rc_cek = state["runcount"]
+                if (rc_before is not None and rc_cek is not None
+                        and rc_cek > rc_before):
+                    out["loops_done"] += 1
+                    out["runcount_akhir"] = rc_cek
+                    out["energy_akhir"] = state["energy"]
+                    log(f"    loop {loop_i}/{loops}: BERHASIL (cek akhir: "
+                        f"RunCount {rc_before}->{rc_cek}, konfirmasi "
+                        f"sebelumnya terlewat).")
+                    continue
             out["gagal"].append(f"loop{loop_i} gagal total")
             # Lanjut ke loop berikut (koneksi mungkin masih hidup);
             # Count loop berikut akan memastikan.
