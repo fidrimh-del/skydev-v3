@@ -7,20 +7,17 @@ dengan LOOP per bot.
 Alur per bot (satu koneksi TCP, loop di dalamnya):
   login -> TCP login -> tunggu jendela login (tbugv/JoinedRoom)
   -> untuk tiap loop (1..LOOPS):
-       Count (cek energi + RunCount) -> kalau energi < 1, STOP (habis)
-       -> JoinGame (GameId HANYA dari 'crazy-run-joined' f2)
+       Count (RunCount) -> JoinGame (GameId HANYA dari 'crazy-run-joined' f2)
        -> tunggu Start -> GameEnd -> QuestTrigger -> Count-sesudah
        -> Statistik total_matches -> sukses bila RunCount naik
           (atau PlayerResult diterima); kalau gagal, RETRY 1x
   -> LeaveGame -> HASIL per bot.
 
-Energi: maks 6, 1 run ≈ 1 energi, recharge 1/jam. Bot baru (clan)
-harusnya energi penuh 6 -> maks ~6 loop per sesi. Kalau LOOPS > energi
-tersisa, bot berhenti di batas energi dan dilaporkan (bukan gagal).
-'Semua bot harus berhasil' = exit 0 hanya bila SETIAP bot menyelesaikan
-SEMUA loop yang diminta (atau berhenti karena energi habis dengan
-alasan jelas); kalau ada bot yang loop-nya gagal total, exit 1 dan
-nama bot + alasannya dicetak.
+Energi: KOREKSI Bartes 2026-11-08 07:10 WIB — energi TIDAK membatasi
+jumlah lomba (di game bisa main sepuasnya; energi hanya untuk reward).
+Jadi loop TIDAK berhenti saat energi habis; energi hanya dicatat
+untuk info. Loop berhenti hanya bila diminta selesai atau koneksi
+benar-benar gagal.
 
 Env / arg:
   SUPABASE_URL, SUPABASE_SERVICE_KEY (baca clan_bots)
@@ -309,10 +306,10 @@ def tcp_crazyrun_loops(jwt, host, port, command, run_time, wait_start,
                        loops, max_retry):
     """Jalankan `loops` lomba Crazy Run dalam satu koneksi TCP.
     Kembalikan dict: loops_done, runcount_awal/akhir, energy_awal/akhir,
-    gagal (list alasan), energy_habis (bool)."""
+    gagal (list alasan)."""
     out = {"loops_done": 0, "runcount_awal": None, "runcount_akhir": None,
            "energy_awal": None, "energy_akhir": None,
-           "gagal": [], "energy_habis": False, "error": ""}
+           "gagal": [], "error": ""}
     sock, _pid = L.tcp_connect(host, port)
     if sock is None:
         out["error"] = "tcp_connect"
@@ -379,13 +376,9 @@ def tcp_crazyrun_loops(jwt, host, port, command, run_time, wait_start,
     out["energy_awal"] = state["energy"]
 
     for loop_i in range(1, loops + 1):
-        # Cek energi sebelum loop (dari Count terakhir).
-        energy = state["energy"]
-        if energy is not None and energy < 1.0:
-            log(f"    loop {loop_i}: energi {energy} < 1 -> STOP "
-                f"(energi habis).")
-            out["energy_habis"] = True
-            break
+        # Energi dicatat untuk info saja — TIDAK menghentikan loop
+        # (Bartes 2026-11-08: di game bisa main sepuasnya, energi
+        # hanya untuk reward, bukan syarat main).
         rc_before = state["runcount"]
         ok = False
         for attempt in range(1, max_retry + 1):
@@ -522,15 +515,6 @@ async def crazyrun_satu_bot(idx, total, bot, command, run_time, wait_start,
         return {"nick": nick, "ok": False, "alasan": res["error"],
                 "loops_done": 0, "loops_minta": loops}
     done = res["loops_done"]
-    if res["energy_habis"] and done < loops:
-        alasan = (f"energi habis setelah {done}/{loops} loop "
-                  f"(energi awal {res['energy_awal']})")
-        log(f"[{idx}/{total}] {nick}: STOP energi habis "
-            f"({done}/{loops} loop).")
-        return {"nick": nick, "ok": done >= loops, "alasan": alasan,
-                "loops_done": done, "loops_minta": loops,
-                "runcount_awal": res["runcount_awal"],
-                "runcount_akhir": res["runcount_akhir"]}
     if done >= loops:
         log(f"[{idx}/{total}] {nick}: SELESAI {done}/{loops} loop "
             f"(RunCount {res['runcount_awal']}->{res['runcount_akhir']}).")
@@ -609,9 +593,8 @@ async def main():
     for r in gagal:
         log(f"  GAGAL: {r['nick']} — {r['alasan']} "
             f"({r['loops_done']}/{r['loops_minta']} loop)")
-    log("[*] Catatan: energi maks 6/lomba ~1 energi; bot baru energi "
-        "penuh -> maks ~6 loop per sesi. Kalau loop diminta > energi, "
-        "bot berhenti di batas energi (bukan error).")
+    log("[*] Catatan: energi hanya untuk reward (bukan batas main) — "
+        "bot bisa main sebanyak apa pun (Bartes 2026-11-08).")
     return 0 if len(sukses) >= len(bots) else 1
 
 
