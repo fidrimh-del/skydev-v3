@@ -575,6 +575,8 @@ async def main():
                     default=float(os.getenv("WAIT_START", "10")))
     ap.add_argument("--max-retry", type=int,
                     default=int(os.getenv("MAX_RETRY", "2")))
+    ap.add_argument("--max-bot-retry", type=int,
+                    default=int(os.getenv("MAX_BOT_RETRY", "5")))
     ap.add_argument("--command",
                     default=os.getenv("CRAZYRUN_COMMAND", "crazy-run"))
     ap.add_argument("--partisi", type=int,
@@ -611,24 +613,29 @@ async def main():
                 # Join serentak; 1 bot gagal per leg di run 42431603771
                 # karena 'tanpa GameId').
                 await asyncio.sleep((i % args.workers) * 2)
-                res = await crazyrun_satu_bot(
-                    i, len(bots), bot, args.command, args.run_time,
-                    args.wait_start, args.loops, args.max_retry)
-                # Bot-level retry: kalau bot gagal total, coba sekali
-                # lagi dari awal (login baru + koneksi TCP baru) setelah
-                # jeda 5 dtk — koneksi segar sering memperbaiki Join
-                # yang ditolak server.
-                if not res["ok"] and res["loops_done"] < args.loops:
-                    log(f"[{i}/{len(bots)}] {bot.get('nickname') or ''}: "
-                        f"retry bot (percobaan ke-2) setelah 5 dtk...")
-                    await asyncio.sleep(5)
-                    res2 = await crazyrun_satu_bot(
+                # Retry sampai sukses (Bartes 2026-11-08 08:00 WIB):
+                # bot yang gagal diulang dari awal (login baru + TCP
+                # baru) sampai berhasil, maks MAX_BOT_RETRY percobaan.
+                # Kalau sampai batas masih gagal, berarti bukan masalah
+                # sesaat (akun/server) dan harus dilaporkan, bukan
+                # diulang tanpa henti.
+                best = None
+                for percobaan in range(1, args.max_bot_retry + 1):
+                    res = await crazyrun_satu_bot(
                         i, len(bots), bot, args.command, args.run_time,
                         args.wait_start, args.loops, args.max_retry)
-                    # Pakai hasil terbaik (loop terbanyak).
-                    if res2["loops_done"] > res["loops_done"]:
-                        res = res2
-                return res
+                    if best is None or (res["loops_done"]
+                                        > best["loops_done"]):
+                        best = res
+                    if res["ok"]:
+                        break
+                    if percobaan < args.max_bot_retry:
+                        log(f"[{i}/{len(bots)}] "
+                            f"{bot.get('nickname') or ''}: retry bot "
+                            f"(percobaan ke-{percobaan + 1}/"
+                            f"{args.max_bot_retry}) setelah 5 dtk...")
+                        await asyncio.sleep(5)
+                return best
             except Exception as exc:
                 log(f"[{i}/{len(bots)}] {bot.get('nickname') or ''}: "
                     f"exception ({type(exc).__name__}).")
