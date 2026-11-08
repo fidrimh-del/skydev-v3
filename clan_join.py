@@ -17,8 +17,9 @@ bergabung, bukan langsung masuk) — tergantung setting clan.
 
 Env / arg:
   SUPABASE_URL, SUPABASE_SERVICE_KEY (baca clan_bots)
-  CLAN_ID (default BiackHat 8ae19c43-c9f3-4bbd-8da6-ac2e1b6af320)
-  CLAN_NAME (default BiackHat, hanya untuk log)
+  CLAN_ID (opsional — kalau kosong, dicari dari CLAN_NAME via SearchClan
+    RoomEvent 'clan' EventId=19; JoinClan sendiri butuh clanId, bukan nama)
+  CLAN_NAME (default BiackHat, dipakai untuk log + pencarian bila ID kosong)
   ACTIVITY_ID (default world Bartes 3e7cec3f-1ae9-4ba2-a19b-a6339e0f9b23)
   JOIN_WORLD (default '1': coba masuk world dulu; '0': langsung JoinClan)
   JUMLAH (default 29), WORKERS (default 6)
@@ -53,6 +54,32 @@ def build_join_clan(clan_id):
     c = clan_id.encode("utf-8")
     return (b"\x08" + L.varint(EV_JOIN)
             + b"\x12" + L.varint(len(c)) + c)
+
+
+EV_SEARCH_CLAN = 19
+
+
+def build_search_clan(name):
+    """SearchClanRequest: f1 EventId=19, f2 Name (string)."""
+    n = name.encode("utf-8")
+    return (b"\x08" + L.varint(EV_SEARCH_CLAN)
+            + b"\x12" + L.varint(len(n)) + n)
+
+
+def parse_clan_message(raw):
+    """Parse satu pesan Clan (protobuf): kembalikan dict
+    {clan_id, name, members, score}."""
+    d = {}
+    for fno, wt, v in parse_protobuf_fields(raw):
+        if fno == 1 and wt == "string/bytes" and isinstance(v, str):
+            d["clan_id"] = v
+        elif fno == 2 and wt == "varint":
+            d["members"] = v
+        elif fno == 3 and wt == "varint":
+            d["score"] = v
+        elif fno == 6 and wt == "string/bytes" and isinstance(v, str):
+            d["name"] = v
+    return d
 
 
 def parse_protobuf_fields(data):
@@ -313,6 +340,88 @@ def tcp_join_flow(jwt, host, port, gsid, clan_id, activity_id):
 
 # ---------- baca bot dari clan_bots ----------
 
+def tcp_resolve_clan_id(jwt, host, port, gsid, name, activity_id):
+    """Cari clanId dari nama via SearchClan (RoomEvent 'clan', EventId=19).
+    Kembalikan clanId (string) bila ada clan yang namanya cocok persis
+    (case-insensitive), else None. Bot sebaiknya sudah masuk world dulu
+    (ClanMechanic aktif) — fungsi ini coba masuk world bila gsid ada.
+    CATATAN: SearchClan via RoomEvent ini belum pernah terbukti menerima
+    respons dari bot (clan_diag.py selalu 0 RoomEvent); kalau ini
+    mengembalikan None, isi ID Clan secara manual di panel."""
+    sock, _pid = L.tcp_connect(host, port)
+    if sock is None:
+        return None
+    try:
+        sock.sendall(L.build_login_frame(jwt))
+    except Exception:
+        return None
+    fr = FrameReader(sock)
+    got, closed = fr.read_until(
+        lambda f: _is_tbugv(f) or _is_joinedroom(f), 3)
+    if closed:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        return None
+    room = None
+    if got is not None and _is_tbugv(got):
+        time.sleep(1)
+    elif got is not None:
+        room = True
+    if activity_id and not room and gsid:
+        try:
+            room = L.tcp_join_only(sock, gsid)
+        except Exception:
+            room = None
+    if room:
+        try:
+            for n in ["init_pos", "init_day_night", "preset",
+                      "fetch_events"]:
+                sock.sendall(L.build_room_event_varint(n, b""))
+            time.sleep(0.3)
+            sock.sendall(L.build_room_event_varint("activity/get", b""))
+        except Exception:
+            pass
+        time.sleep(2)
+    try:
+        sock.sendall(L.build_room_event_varint(
+            CLAN_CMD, build_search_clan(name)))
+    except Exception:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        return None
+    found = None
+    for f in fr.drain(6):
+        ev_name, data = decode_room_event(f)
+        if ev_name != "clan" or not data:
+            continue
+        for fno, wt, v in parse_protobuf_fields(data):
+            if fno != 3 or wt != "string/bytes":
+                continue
+            try:
+                raw = bytes.fromhex(v)
+            except Exception:
+                continue
+            c = parse_clan_message(raw)
+            if not c.get("clan_id"):
+                continue
+            log(f"    [search] clan ditemukan: {c.get('name')} "
+                f"({c.get('clan_id')}, anggota {c.get('members')})")
+            if c.get("name", "").lower() == name.lower():
+                found = c["clan_id"]
+                break
+        if found:
+            break
+    try:
+        sock.close()
+    except Exception:
+        pass
+    return found
+
+
 def read_bots(jumlah, clan_id):
     """Baca bot dari tabel panel clan_bots via PostgREST (service key).
     Kembalikan list dict {email, password, device_id, nickname}."""
@@ -392,8 +501,7 @@ async def main():
     global _exec_pool
     ap = argparse.ArgumentParser()
     ap.add_argument("--clan-id",
-                    default=os.getenv("CLAN_ID",
-                                      "8ae19c43-c9f3-4bbd-8da6-ac2e1b6af320"))
+                    default=os.getenv("CLAN_ID", ""))
     ap.add_argument("--clan-name", default=os.getenv("CLAN_NAME", "BiackHat"))
     ap.add_argument("--activity-id",
                     default=os.getenv(
@@ -413,22 +521,60 @@ async def main():
     except Exception:
         pass
     bots = read_bots(args.jumlah, args.clan_id)
-    log(f"[*] JOIN CLAN MASSAL: {len(bots)} bot -> clan "
-        f"'{args.clan_name}' ({args.clan_id}) "
-        f"(join_world={'ya' if join_world else 'tidak'}, "
-        f"workers={args.workers})")
     if not bots:
         log("[!] Tidak ada bot di clan_bots — batal.")
         return 1
     _exec_pool = concurrent.futures.ThreadPoolExecutor(
         max_workers=args.workers)
+    # ID clan opsional: kalau kosong, cari dari nama via SearchClan
+    # (pakai bot pertama). JoinClan butuh clanId, bukan nama.
+    clan_id = args.clan_id
+    if not clan_id and args.clan_name:
+        log(f"[*] ID clan kosong — cari ID dari nama "
+            f"'{args.clan_name}' via SearchClan...")
+        first = bots[0]
+        try:
+            from curl_cffi.requests import AsyncSession
+            async with AsyncSession(impersonate="chrome110",
+                                    verify=False) as session:
+                if join_world and args.activity_id:
+                    jwt, host, port, gsid = await login_for_activity(
+                        session, first["email"], first["password"],
+                        first["device_id"], args.activity_id)
+                else:
+                    jwt, alloc = await L.login_and_allocate(
+                        first["email"], first["password"],
+                        first["device_id"], session)
+                    if not alloc:
+                        jwt, host, port, gsid = None, None, None, ""
+                    else:
+                        host, port = L.find_host_port(alloc)
+                        gsid = ""
+                if jwt and host and port:
+                    loop = asyncio.get_running_loop()
+                    clan_id = await loop.run_in_executor(
+                        _exec_pool, tcp_resolve_clan_id, jwt, host, port,
+                        gsid, args.clan_name,
+                        args.activity_id if join_world else "")
+        except Exception as exc:
+            log(f"[!] Resolusi nama clan gagal: {exc}")
+        if not clan_id:
+            log(f"[!] Clan '{args.clan_name}' TIDAK ditemukan via "
+                f"SearchClan — batal. Isi ID Clan di panel (atau "
+                f"periksa ejaan nama).")
+            return 1
+        log(f"[+] Nama '{args.clan_name}' -> clanId {clan_id}")
+    log(f"[*] JOIN CLAN MASSAL: {len(bots)} bot -> clan "
+        f"'{args.clan_name}' ({clan_id}) "
+        f"(join_world={'ya' if join_world else 'tidak'}, "
+        f"workers={args.workers})")
     sem = asyncio.Semaphore(args.workers)
 
     async def _run(i, bot):
         async with sem:
             try:
                 return await join_satu_bot(
-                    i, len(bots), bot, args.clan_id,
+                    i, len(bots), bot, clan_id,
                     args.activity_id, join_world)
             except Exception as exc:
                 log(f"[{i}/{len(bots)}] {bot.get('nickname') or ''}: "
