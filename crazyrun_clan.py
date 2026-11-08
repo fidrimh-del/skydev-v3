@@ -25,6 +25,9 @@ Env / arg:
   JUMLAH (default 29), LOOPS (default 1), WORKERS (default 6)
   RUN_TIME (default 12), WAIT_START (default 10), MAX_RETRY (default 2)
   COMMAND (default 'crazy-run')
+  PARTISI (default 0), TOTAL_PARTISI (default 1) — untuk matrix:
+    bot diurutkan by email, lalu diambil bots[partisi::total_partisi]
+    (disjoint, deterministik). Leg matrix ke-i memproses partisi i.
 Keluar: exit 0 bila semua bot menyelesaikan semua loop, else 1.
 """
 import argparse
@@ -550,12 +553,22 @@ async def main():
                     default=int(os.getenv("MAX_RETRY", "2")))
     ap.add_argument("--command",
                     default=os.getenv("CRAZYRUN_COMMAND", "crazy-run"))
+    ap.add_argument("--partisi", type=int,
+                    default=int(os.getenv("PARTISI", "0")))
+    ap.add_argument("--total-partisi", type=int,
+                    default=int(os.getenv("TOTAL_PARTISI", "1")))
     args = ap.parse_args()
     try:
         L.apply_panel_versions()
     except Exception:
         pass
     bots = read_bots(args.jumlah, args.clan_id)
+    # Partisi matrix: urut by email (deterministik), ambil stride.
+    if args.total_partisi > 1:
+        bots = sorted(bots, key=lambda b: b["email"])
+        bots = bots[args.partisi::args.total_partisi]
+        log(f"[*] Partisi {args.partisi}/{args.total_partisi}: "
+            f"{len(bots)} bot di leg ini.")
     log(f"[*] CRAZY RUN MASSAL: {len(bots)} bot x {args.loops} loop "
         f"(workers={args.workers}, run_time={args.run_time}, "
         f"max_retry={args.max_retry})")
