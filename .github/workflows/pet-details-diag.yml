@@ -1,0 +1,43 @@
+name: DIAG Pet Details Katalog (1 bot)
+
+# Diag sekali jalan (bukan produksi): 1 bot kirim PetDetailsRequest
+# (EventId=19) via RoomEvent 'pet', lalu terima PetDetailsResponse
+# (EventId=24) berisi KATALOG LENGKAP semua spesies pet (Type ->
+# DefaultName, nama asli). Dibuat 2026-11-09 atas permintaan Bartes —
+# akun utama punya ~2000 pet, cek manual satu per satu mustahil, dan
+# daftar pet TCP hanya memberi Type + kunci lokalisasi (bukan nama).
+# Jangan dipakai untuk order.
+# Kredensial bot via input (akun Gmail mandiri, TIDAK ada di panel DB).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot"
+        required: true
+        default: "pkxdshop.id@gmail.com"
+      password:
+        description: "Password bot (ROTASI sesudah tes)"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = bawaan probe)"
+        required: false
+        default: ""
+      wait:
+        description: "Tunggu respons maks (detik)"
+        required: false
+        default: "15"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u pet_details_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --wait "${{ inputs.wait }}"
+        env:
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
