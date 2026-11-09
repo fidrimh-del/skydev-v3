@@ -24,6 +24,14 @@ alokasi (pakai JWT yang sama, datacenterId 'blr1') sampai server
 cocok, maks N percobaan. Bila tidak cocok, BERHENTI (tidak kirim gift
 dari server lain — itu hanya mengulang tes yang sudah gagal).
 
+CARA UTAMA (join server teman, usul Bartes 2026-11-09): dump punya
+`AllocateToUserIdRequest : GenericAllocateRequest` dengan field
+`destinationUserId` — alokasi lobby dengan destinationUserId = UUID
+teman menempatkan bot di server teman itu. Bot pkxdshop.id hanya
+berteman dengan SkyDev, jadi ini jalur yang tepat. Diag mencoba
+destinationUserId DULU; bila tidak mengembalikan server target,
+baru fallback ke alokasi ulang.
+
 Dibuat 2026-11-09 atas permintaan Bartes (tes gift akun tes -> SkyDev,
 satu room). Jangan dipakai untuk order.
 """
@@ -69,9 +77,28 @@ async def allocate_once(session, jwt, datacenter=None):
     return resp if isinstance(resp, dict) else {}
 
 
+async def allocate_to_user(session, jwt, dest_user_id):
+    """Alokasi ke server seorang teman (AllocateToUserIdRequest, dump:
+    GenericAllocateRequest + destinationUserId). POST /lobby/allocation
+    dengan destinationUserId = UUID teman. Kembalikan dict body."""
+    body = {"userToken": jwt,
+            "gameServerProtocolVersion": L.GAME_PROTOCOL,
+            "isPrivate": False,
+            "destinationUserId": dest_user_id}
+    b = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    try:
+        r = await session.post(L.LOBBY_URL + "/lobby/allocation", data=b,
+                               headers=L.HEADERS_BASE.copy(), timeout=20)
+        resp = r.json()
+    except Exception as exc:
+        print(f"[-] alokasi destinationUserId gagal: {exc}")
+        return {}
+    return resp if isinstance(resp, dict) else {}
+
+
 async def gift_join_room_once(session, email, password, device_id, pet_id,
                               recipient, wait_seconds, max_alloc_tries,
-                              target_server, target_room):
+                              target_server, target_room, dest_user_id=""):
     """Satu percobaan gift dari room target. Kembalikan dict hasil."""
     hasil = {"email": email, "pet_id": pet_id, "recipient": recipient,
              "target_server": target_server, "target_room": target_room,
@@ -85,15 +112,33 @@ async def gift_join_room_once(session, email, password, device_id, pet_id,
         print("[!] login/alokasi gagal.")
         return hasil
 
-    # --- alokasi ulang sampai server cocok ---
+    # --- alokasi ke server teman dulu (destinationUserId = join friend) ---
     chosen = None
     allocs = [alloc]
     srv0, room0 = parse_gsid(alloc.get("gameServerId", ""))
-    print(f"[*] alokasi percobaan 1: server={srv0} room={room0}")
+    print(f"[*] alokasi awal (tanpa dest): server={srv0} room={room0}")
     hasil["alloc_servers"].append(srv0)
     if srv0 == target_server:
         chosen = alloc
-    else:
+    if not chosen and dest_user_id:
+        print(f"[*] coba alokasi destinationUserId={dest_user_id} "
+              f"(join server teman) ...")
+        body = await allocate_to_user(session, user_jwt, dest_user_id)
+        if body:
+            allocs.append(body)
+            srv, rm = parse_gsid(body.get("gameServerId", ""))
+            hasil["alloc_servers"].append(srv)
+            print(f"[*] alokasi destinationUserId: server={srv} room={rm}")
+            if srv == target_server:
+                chosen = body
+                print("[+] destinationUserId BERHASIL — bot dialokasikan "
+                      "ke server teman!")
+            else:
+                print("[*] destinationUserId tidak mengembalikan server "
+                      "target (mungkin field diabaikan / teman tidak "
+                      "ditemukan) — lanjut ke alokasi ulang.")
+    # --- fallback: alokasi ulang sampai server cocok ---
+    if not chosen:
         for i in range(2, max_alloc_tries + 1):
             body = await allocate_once(session, user_jwt, datacenter="blr1")
             hasil["alloc_tries"] = i
@@ -233,6 +278,10 @@ async def main():
                         "pkxd-tb-prod-1.94.0-main-vvz4s-vh7s7"))
     ap.add_argument("--target-room", type=int,
                     default=int(os.getenv("GIFT_TARGET_ROOM", "7")))
+    ap.add_argument("--dest-user-id",
+                    default=os.getenv(
+                        "GIFT_DEST_USER_ID",
+                        "aae2efe1-1abb-48c2-8799-ea192692a49c"))
     ap.add_argument("--max-alloc-tries", type=int,
                     default=int(os.getenv("GIFT_MAX_ALLOC_TRIES", "15")))
     ap.add_argument("--wait", type=int,
@@ -247,6 +296,7 @@ async def main():
     print(f"[*] Diag Gift Join-Room — bot {args.email} | pet {args.pet_id} "
           f"-> {args.recipient}")
     print(f"[*] Target: server {args.target_server} room {args.target_room} "
+          f"| dest-user-id {args.dest_user_id} "
           f"| maks alokasi {args.max_alloc_tries} | tunggu {args.wait} dtk")
     L.QUIET = False
     t0 = time.time()
@@ -255,7 +305,8 @@ async def main():
         hasil = await gift_join_room_once(
             session, args.email, args.password, args.device_id,
             args.pet_id, args.recipient, args.wait,
-            args.max_alloc_tries, args.target_server, args.target_room)
+            args.max_alloc_tries, args.target_server, args.target_room,
+            args.dest_user_id)
     print("=" * 56)
     print("HASIL GIFT JOIN-ROOM DIAG")
     print(f"  Bot: {hasil['email']} | pet: {hasil['pet_id']}")
