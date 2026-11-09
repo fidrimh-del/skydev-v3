@@ -20,7 +20,9 @@ Temuan dump (dump_31_ijrw.cs, game 1.94.0):
         f2 Successful (bool), f3 ErrorMessage (string),
         f4 Pets (repeated PetData):
           PetData: f1 OwnerId, f2 CreatedAt, f3 PetId (UUID instance),
-            f4 DisplayName, f5 Color, f6 Stage, f7 Progress, f8 Ads,
+            f4 DisplayName, f5 Color, f6 Stage (PetStage enum: 0=NotIncubated,
+            1=Incubated, 2=Baby, 3=Child, 4=Teen, 5=MergeIngredient,
+            6=Mutated, 7=Shiny), f7 Progress, f8 Ads,
             f9 Personality, f10 NameChange, f11 Items, f12 Type,
             f13 ExperiencePoints.
 
@@ -161,8 +163,10 @@ def _raw_fields(data):
 
 def _parse_petdata(data):
     """Parse satu PetData -> dict {pet_id, display_name, type, owner_id, stage}.
-    PetData: f1 OwnerId, f2 CreatedAt, f3 PetId, f4 DisplayName, f6 Stage
-    (0=baby, 1=child, 2=teen/adult), f12 Type."""
+    PetData: f1 OwnerId, f2 CreatedAt, f3 PetId, f4 DisplayName,
+    f6 Stage (PetStage enum, lihat atas), f12 Type.
+    Catatan: protobuf menghilangkan field bernilai 0, jadi pet telur
+    (NotIncubated=0) terbaca stage=None."""
     pet = {"pet_id": None, "display_name": None,
            "type": None, "owner_id": None, "stage": None}
     for f3, w3, v3 in _raw_fields(bytes(data)):
