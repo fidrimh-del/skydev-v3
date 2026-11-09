@@ -239,10 +239,16 @@ async def carry_accept_once(session, email, password, device_id,
             hasil["consent_events"].append(entry)
             print(f"[+] CONSENT t+{entry['t_rel']} dtk: {entry.get('fields', entry['hex'][:120])}")
             # Terima bila ini undangan gendong (Forward, ConsentType 0).
+            # PENTING (proto3): field bernilai 0 TIDAK diserialisasi,
+            # jadi "tidak ada" di wire = 0. Undangan ForwardInvite yang
+            # asli hanya berisi f2 (Sender) + f3 (Recipient) — f1=0 dan
+            # f4=0 dihilangkan server. v1 salah menunggu f1==0 DAN f4==0
+            # secara eksplisit, sehingga tidak pernah menerima (log run
+            # 42644573867: 22 event consent masuk, 0 diterima).
             fields = entry.get("fields", {})
             try:
-                ev_id = int(fields.get("1", -1))
-                ctype = int(fields.get("4", -1))
+                ev_id = int(fields.get("1", 0))
+                ctype = int(fields.get("4", 0))
             except Exception:
                 ev_id = -1
                 ctype = -1
