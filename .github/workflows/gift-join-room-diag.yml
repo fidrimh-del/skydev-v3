@@ -31,13 +31,13 @@ on:
         required: true
         default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
       target_server:
-        description: "Nama server target (bagian tengah gameServerId)"
-        required: true
-        default: "pkxd-tb-prod-1.94.0-main-vvz4s-vh7s7"
+        description: "Nama server target (bagian tengah gameServerId) — kosong = ambil dari alokasi destinationUserId (mode panel)"
+        required: false
+        default: ""
       target_room:
-        description: "Nomor room target"
-        required: true
-        default: "7"
+        description: "Nomor room target — 0 = ambil dari alokasi destinationUserId (mode panel)"
+        required: false
+        default: "0"
       dest_user_id:
         description: "UUID teman (join server teman via destinationUserId)"
         required: false
