@@ -16,7 +16,7 @@ on:
         description: "Email bot"
         required: true
         default: "pkxdshop.id@gmail.com"
-password: <redacted>
+      password:
         description: "Password bot (ROTASI sesudah tes)"
         required: true
       device_id:
@@ -45,5 +45,5 @@ jobs:
       - run: python -u follow_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --capture-seconds "${{ inputs.capture_seconds }}"
         env:
           FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
-FSTR_APP_SECRET: <redacted>
-PET_RESULT_SECRET: <redacted>
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PET_RESULT_SECRET: ${{ secrets.PET_RESULT_SECRET }}
