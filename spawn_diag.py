@@ -141,6 +141,28 @@ async def spawn_once(session, email, password, device_id, dest_user_id,
     except Exception as exc:
         print(f"[!] kirim JoinRoom gagal: {exc}")
         return hasil
+    t0 = time.time()
+    # --- kirim frame spawn LANGSUNG sesudah JoinRoom (tanpa tunggu
+    # konfirmasi dulu). v1 menunggu JoinedRoom sampai 4 dtk baru kirim,
+    # dan bot tidak muncul di spawn — kemungkinan server sudah
+    # menempatkan bot di (0,0,0) sebelum frame posisi pertama tiba,
+    # sehingga frame yang datang belakangan dianggap lompat/teleport
+    # dan diabaikan. Client asli kirim posisi pertamanya langsung saat
+    # spawn. Kirim 3x (jeda 200 ms) supaya pasti terdaftar. ---
+    data = build_spawn_aaa(sx, sy, sz)
+    frame = L.build_room_event_varint("tbulv", data)
+    for i in range(3):
+        try:
+            sock.sendall(frame)
+        except Exception as exc:
+            print(f"[!] kirim frame spawn #{i} gagal: {exc}")
+            return hasil
+        if i == 0:
+            hasil["spawn_sent"] = True
+            hasil["spawn_t_rel"] = round(time.time() - t0, 1)
+            print(f"[+] frame SPAWN terkirim t+{time.time() - t0:.1f} dtk "
+                  f"X={sx} Y={sy} Z={sz} (3x)")
+        time.sleep(0.2)
 
     def _is_target_room(f):
         return (len(f) >= 6 and f[0] == 0x06 and f[1] == 1
@@ -150,24 +172,11 @@ async def spawn_once(session, email, password, device_id, dest_user_id,
     if closed:
         print("[!] koneksi tertutup saat JoinRoom.")
         return hasil
-    t0 = time.time()
     if joined is not None:
         hasil["joined_room"] = rm
         print(f"[+] JoinedRoom({rm}) TERKONFIRMASI.")
     else:
-        print("[!] TIDAK ada konfirmasi JoinedRoom — tetap kirim spawn.")
-    # --- kirim SATU frame spawn (sekali saja, titik tetap) ---
-    data = build_spawn_aaa(sx, sy, sz)
-    frame = L.build_room_event_varint("tbulv", data)
-    try:
-        sock.sendall(frame)
-        hasil["spawn_sent"] = True
-        hasil["spawn_t_rel"] = round(time.time() - t0, 1)
-        print(f"[+] frame SPAWN terkirim t+{time.time() - t0:.1f} dtk "
-              f"X={sx} Y={sy} Z={sz}")
-    except Exception as exc:
-        print(f"[!] kirim frame spawn gagal: {exc}")
-        return hasil
+        print("[!] TIDAK ada konfirmasi JoinedRoom.")
     # --- dengarkan: ada pemain di dekat titik spawn? ---
     from follow_diag3 import parse_tbulv_pos as _parse_pos
     near = {}
