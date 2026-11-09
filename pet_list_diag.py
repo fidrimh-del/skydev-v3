@@ -160,10 +160,11 @@ def _raw_fields(data):
 
 
 def _parse_petdata(data):
-    """Parse satu PetData -> dict {pet_id, display_name, type, owner_id}.
-    PetData: f1 OwnerId, f2 CreatedAt, f3 PetId, f4 DisplayName, f12 Type."""
+    """Parse satu PetData -> dict {pet_id, display_name, type, owner_id, stage}.
+    PetData: f1 OwnerId, f2 CreatedAt, f3 PetId, f4 DisplayName, f6 Stage
+    (0=baby, 1=child, 2=teen/adult), f12 Type."""
     pet = {"pet_id": None, "display_name": None,
-           "type": None, "owner_id": None}
+           "type": None, "owner_id": None, "stage": None}
     for f3, w3, v3 in _raw_fields(bytes(data)):
         if f3 == 1 and w3 == 2:
             try:
@@ -180,6 +181,8 @@ def _parse_petdata(data):
                 pet["display_name"] = bytes(v3).decode("utf-8")
             except Exception:
                 pass
+        elif f3 == 6 and w3 == 0:
+            pet["stage"] = v3
         elif f3 == 12 and w3 == 0:
             pet["type"] = v3
     return pet
@@ -494,14 +497,23 @@ async def main():
     print(f"  Successful: {hasil['successful']} | Error: {hasil['error']!r}")
     print(f"  NextPageKey: {hasil['next_page_key']!r}")
     print(f"  Jumlah pet: {len(hasil['pets'])}")
-    for p in hasil["pets"]:
-        print(f"    - id={p['pet_id']} type={p['type']} "
+    # Ringkas: hanya 20 pet pertama (daftar lengkap ada di PETLIST_JSON
+    # di bawah) agar log tetap kecil & cepat diunduh panel.
+    for p in hasil["pets"][:20]:
+        print(f"    - id={p['pet_id']} type={p['type']} stage={p.get('stage')} "
               f"name={p['display_name']!r} owner={p['owner_id']}")
+    if len(hasil["pets"]) > 20:
+        print(f"    - ... +{len(hasil['pets']) - 20} pet lagi (lihat PETLIST_JSON)")
     if hasil.get("pets_by_command"):
         print(f"  Pet per command: {hasil['pets_by_command']}")
     print(f"  RoomEvent diterima: {len(hasil['events'])}")
-    for name, hx in hasil["events"]:
-        print(f"    - {name}: {hx[:160]}")
+    # Ringkas: hitung per nama command, tanpa dump hex tiap event
+    # (log besar memperlambat pengarsipan & unduhan log GitHub).
+    _hitung = {}
+    for _n, _hx in hasil["events"]:
+        _hitung[_n] = _hitung.get(_n, 0) + 1
+    for _n, _c in sorted(_hitung.items()):
+        print(f"    - {_n}: {_c}")
     print(f"  Waktu total: {time.time() - t0:.0f} detik")
     print("=" * 56)
     # Baris JSON mesin (untuk panel Pet Gift "Pet Saya"): satu baris,
@@ -511,7 +523,8 @@ async def main():
         "count": len(hasil["pets"]),
         "pets": [
             {"pet_id": p["pet_id"], "type": p["type"],
-             "display_name": p["display_name"], "owner_id": p["owner_id"]}
+             "display_name": p["display_name"], "owner_id": p["owner_id"],
+             "stage": p.get("stage")}
             for p in hasil["pets"]
         ],
         "successful": hasil["successful"],
