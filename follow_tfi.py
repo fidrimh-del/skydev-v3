@@ -49,20 +49,16 @@ async def allocate_to_user(session, jwt, dest_user_id):
     body = {"userToken": jwt,
             "gameServerProtocolVersion": L.GAME_PROTOCOL,
             "isPrivate": False,
-            "destinationUserId": dest_user_id,
-            "gameMode": "default",
-            "activityId": "",
-            "serverType": "",
-            "lobbyGameMode": "",
-            "isSpectator": False,
-            "isReconnect": False}
-    url = L.LOBBY_URL + "/lobby/allocation"
-    async with session.post(url, json=body,
-                            headers=L.HEADERS_BASE) as resp:
-        try:
-            return await resp.json()
-        except Exception:
-            return None
+            "destinationUserId": dest_user_id}
+    b = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    try:
+        r = await session.post(L.LOBBY_URL + "/lobby/allocation", data=b,
+                               headers=L.HEADERS_BASE.copy(), timeout=20)
+        resp = r.json()
+    except Exception as exc:
+        print(f"[-] alokasi destinationUserId gagal: {exc}")
+        return {}
+    return resp if isinstance(resp, dict) else {}
 
 
 def build_tfi_emit(uuid_str, type_tag):
