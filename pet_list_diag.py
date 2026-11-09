@@ -35,6 +35,7 @@ jendela login (tbugv/JoinedRoom) -> kirim PageRequest -> catat respons.
 """
 import argparse
 import asyncio
+import json
 import os
 import socket
 import struct
@@ -503,6 +504,19 @@ async def main():
         print(f"    - {name}: {hx[:160]}")
     print(f"  Waktu total: {time.time() - t0:.0f} detik")
     print("=" * 56)
+    # Baris JSON mesin (untuk panel Pet Gift "Pet Saya"): satu baris,
+    # mudah diparse dari log GitHub Actions tanpa regex rapuh.
+    print("PETLIST_JSON: " + json.dumps({
+        "email": hasil["email"],
+        "count": len(hasil["pets"]),
+        "pets": [
+            {"pet_id": p["pet_id"], "type": p["type"],
+             "display_name": p["display_name"], "owner_id": p["owner_id"]}
+            for p in hasil["pets"]
+        ],
+        "successful": hasil["successful"],
+        "error": hasil["error"],
+    }, ensure_ascii=False))
     return 0
 
 
