@@ -16,8 +16,12 @@ Latar (2026-11-09):
   * ConsentForwardInvite (server -> bot): f1 EventId=0, f2 Sender (UUID
     pengundang), f3 Recipient (UUID bot), f4 ConsentType=0.
   * ConsentInviteResponse (bot -> server, terima/tolak): f1 EventId=1,
-    f2 Sender (UUID bot), f3 Recipient (UUID pengundang),
-    f4 Accepted (bool), f5 ConsentType=0.
+    f2 Sender, f3 Recipient, f4 Accepted (bool), f5 ConsentType=0.
+    PENTING: Sender/Recipient di-ECHO dari undangan (f2=pengundang,
+    f3=bot), JANGAN dibalik. v2 membalik (Sender=bot, Recipient=
+    pengundang) dan hasilnya TERBALIK: bot yang menggendong Bartes,
+    bukan sebaliknya. Server memakai Sender/Recipient respons untuk
+    menentukan arah gendong.
 - Alur tes: bot login -> alokasi destinationUserId (Bartes) -> JoinRoom
   -> dengarkan RoomEvent "consent". Saat undangan gendong diterima
   (ConsentForwardInvite, ConsentType CarryPlayer), bot LANGSUNG kirim
@@ -126,6 +130,8 @@ def build_consent_response(sender_uuid, recipient_uuid, accepted=True,
                            consent_type=0):
     """Bangun ConsentInviteResponse (bot -> server).
     f1 EventId=1, f2 Sender, f3 Recipient, f4 Accepted, f5 ConsentType.
+    sender_uuid/recipient_uuid di-ECHO dari undangan (pengundang, bot)
+    — JANGAN dibalik, server memakai keduanya untuk arah gendong.
     """
     def varint(v):
         out = bytearray()
@@ -144,8 +150,8 @@ def build_consent_response(sender_uuid, recipient_uuid, accepted=True,
 
     pb = b""
     pb += b"\x08" + varint(1)                       # f1 EventId=1
-    pb += sfield(2, sender_uuid)                     # f2 Sender (bot)
-    pb += sfield(3, recipient_uuid)                  # f3 Recipient (pengundang)
+    pb += sfield(2, sender_uuid)                     # f2 Sender (echo undangan)
+    pb += sfield(3, recipient_uuid)                  # f3 Recipient (echo undangan)
     pb += b"\x20" + varint(1 if accepted else 0)     # f4 Accepted
     pb += b"\x28" + varint(consent_type)             # f5 ConsentType
     return pb
@@ -257,7 +263,11 @@ async def carry_accept_once(session, email, password, device_id,
                 recipient = fields.get("3", "")
                 if isinstance(sender, str) and isinstance(recipient, str) \
                         and sender and recipient:
-                    resp = build_consent_response(recipient, sender, True, 0)
+                    # ECHO undangan (sender=pengundang, recipient=bot).
+                    # JANGAN dibalik: v2 membalik dan hasilnya terbalik
+                    # (bot menggendong Bartes). Server memakai Sender/
+                    # Recipient respons untuk arah gendong.
+                    resp = build_consent_response(sender, recipient, True, 0)
                     frame = L.build_room_event_varint("consent", resp)
                     try:
                         sock.sendall(frame)
