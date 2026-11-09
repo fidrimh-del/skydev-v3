@@ -1,0 +1,39 @@
+name: DIAG Follow tfi v2 — kirim tfi SEBELUM JoinRoom
+
+# Tes v2: kirim "tfi" SEBELUM JoinRoom (server tentukan spawn saat
+# join). v1 kirim sesudah join dan bot spawn di titik default.
+# Bot TIDAK kirim posisi. Hanya user variable "tfi".
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot"
+        required: true
+        default: "pkxdshop.id@gmail.com"
+      password:
+        description: "Password bot (ROTASI sesudah tes)"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = bawaan probe)"
+        required: false
+        default: ""
+      dest_user_id:
+        description: "UUID target (teman yang diikuti)"
+        required: false
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u follow_tfi2.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}"
+        env:
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PET_RESULT_SECRET: ${{ secrets.PET_RESULT_SECRET }}
