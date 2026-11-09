@@ -465,6 +465,27 @@ async def pet_list_once(session, email, password, device_id, commands):
     return hasil
 
 
+def _kirim_hasil_cepat(kind, email, result):
+    """POST hasil diag ke /api/pet-result (jalur cepat panel).
+    Gagal kirim TIDAK menggagalkan diag (log tetap jadi fallback).
+    Secret dari env PET_RESULT_SECRET (GitHub secret)."""
+    secret = os.getenv("PET_RESULT_SECRET", "")
+    if not secret:
+        return
+    try:
+        import urllib.request
+        data = json.dumps({"kind": kind, "email": email,
+                           "result": result, "secret": secret}).encode()
+        req = urllib.request.Request(
+            "https://pkxd.shop/api/pet-result", data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            resp.read()
+        print("[+] hasil cepat terkirim ke /api/pet-result")
+    except Exception as exc:
+        print(f"[*] kirim hasil cepat gagal (log tetap jadi fallback): {exc}")
+
+
 async def main():
     global VERBOSE
     ap = argparse.ArgumentParser()
@@ -530,6 +551,21 @@ async def main():
         "successful": hasil["successful"],
         "error": hasil["error"],
     }, ensure_ascii=False))
+    # Jalur cepat: POST hasil ke /api/pet-result agar panel tidak perlu
+    # menunggu arsip log GitHub (30 dtk–2 mnt). Secret dari env
+    # PET_RESULT_SECRET (GitHub secret, diteruskan workflow).
+    _kirim_hasil_cepat("petlist", hasil["email"], {
+        "email": hasil["email"],
+        "count": len(hasil["pets"]),
+        "pets": [
+            {"pet_id": p["pet_id"], "type": p["type"],
+             "display_name": p["display_name"], "owner_id": p["owner_id"],
+             "stage": p.get("stage")}
+            for p in hasil["pets"]
+        ],
+        "successful": hasil["successful"],
+        "error": hasil["error"],
+    })
     return 0
 
 
