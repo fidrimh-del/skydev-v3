@@ -158,6 +158,65 @@ def _raw_fields(data):
     return out
 
 
+def _parse_petdata(data):
+    """Parse satu PetData -> dict {pet_id, display_name, type, owner_id}.
+    PetData: f1 OwnerId, f2 CreatedAt, f3 PetId, f4 DisplayName, f12 Type."""
+    pet = {"pet_id": None, "display_name": None,
+           "type": None, "owner_id": None}
+    for f3, w3, v3 in _raw_fields(bytes(data)):
+        if f3 == 1 and w3 == 2:
+            try:
+                pet["owner_id"] = bytes(v3).decode("utf-8")
+            except Exception:
+                pass
+        elif f3 == 3 and w3 == 2:
+            try:
+                pet["pet_id"] = bytes(v3).decode("utf-8")
+            except Exception:
+                pass
+        elif f3 == 4 and w3 == 2:
+            try:
+                pet["display_name"] = bytes(v3).decode("utf-8")
+            except Exception:
+                pass
+        elif f3 == 12 and w3 == 0:
+            pet["type"] = v3
+    return pet
+
+
+def extract_pet_from_getpets_response(data):
+    """Parse GetPetsResponse LANGSUNG (RoomEvent 'pet', bukan di dalam
+    PageResponse): f1 EventId=8, f2 Successful, f3 ErrorMessage,
+    f4 PetData (satu per event; server kirim satu event per pet).
+    Kembalikan (pets, successful, error). Bila f1 != 8, bukan
+    GetPetsResponse -> kembalikan kosong (mis. event 'pet' berisi
+    pasangan UUID saja, bukan PetData lengkap)."""
+    pets = []
+    successful = None
+    error = None
+    is_getpets = False
+    for fno, wt, v in _raw_fields(data):
+        if fno == 1 and wt == 0:
+            if v == 8:
+                is_getpets = True
+            else:
+                return [], None, None
+        elif fno == 2 and wt == 0:
+            successful = bool(v)
+        elif fno == 3 and wt == 2:
+            try:
+                error = bytes(v).decode("utf-8")
+            except Exception:
+                error = bytes(v).hex()
+        elif fno == 4 and wt == 2:
+            pet = _parse_petdata(bytes(v))
+            if pet["pet_id"]:
+                pets.append(pet)
+    if not is_getpets:
+        return [], None, None
+    return pets, successful, error
+
+
 def extract_pets_from_page_response(data):
     """Parse PageResponse -> GetPetsResponse (f3) -> Pets (f4, repeated
     PetData). Kembalikan (pets, successful, error, next_page_key).
@@ -184,26 +243,7 @@ def extract_pets_from_page_response(data):
                         error = bytes(v2).hex()
                 elif f2 == 4 and w2 == 2:
                     # Satu PetData
-                    pet = {"pet_id": None, "display_name": None,
-                           "type": None, "owner_id": None}
-                    for f3, w3, v3 in _raw_fields(bytes(v2)):
-                        if f3 == 1 and w3 == 2:
-                            try:
-                                pet["owner_id"] = bytes(v3).decode("utf-8")
-                            except Exception:
-                                pass
-                        elif f3 == 3 and w3 == 2:
-                            try:
-                                pet["pet_id"] = bytes(v3).decode("utf-8")
-                            except Exception:
-                                pass
-                        elif f3 == 4 and w3 == 2:
-                            try:
-                                pet["display_name"] = bytes(v3).decode("utf-8")
-                            except Exception:
-                                pass
-                        elif f3 == 12 and w3 == 0:
-                            pet["type"] = v3
+                    pet = _parse_petdata(bytes(v2))
                     if pet["pet_id"]:
                         pets.append(pet)
     return pets, successful, error, next_key
@@ -354,6 +394,30 @@ async def pet_list_once(session, email, password, device_id, commands):
             if nxt is not None:
                 hasil["next_page_key"] = nxt
                 print(f"[+] NextPageKey={nxt!r}")
+        # Respons LANGSUNG GetPetsResponse (RoomEvent 'pet'): server kirim
+        # satu event per pet, masing-masing {f1=8, f2=Successful, f4=PetData}.
+        # (Terbukti run 42551093555: PageResponse tak pernah tiba, tapi event
+        # 'pet' berisi PetData lengkap. Parser lama menghitung 0.)
+        pets2, ok2, err2 = extract_pet_from_getpets_response(data)
+        if pets2:
+            seen = {p["pet_id"] for p in hasil["pets"]}
+            baru = [p for p in pets2 if p["pet_id"] not in seen]
+            for p in baru:
+                hasil["pets"].append(p)
+                seen.add(p["pet_id"])
+            if baru:
+                print(f"[+] {len(baru)} pet diterima via GetPetsResponse "
+                      f"langsung (command '{hasil['command_ok']}'):")
+                for p in baru:
+                    print(f"    - id={p['pet_id']} type={p['type']} "
+                          f"name={p['display_name']!r}")
+                if hasil.get("command_ok"):
+                    hasil.setdefault("pets_by_command", {}).setdefault(
+                        hasil["command_ok"], []).extend(
+                            [p["pet_id"] for p in baru])
+            if ok2 is not None and hasil["successful"] is None:
+                hasil["successful"] = ok2
+                hasil["error"] = err2
 
     # --- tunggu jendela login (pola WAIT-LOGIN): tbugv atau JoinedRoom ---
     print("[*] tunggu jendela login (tbugv/JoinedRoom, maks 3 dtk)...")
@@ -432,6 +496,8 @@ async def main():
     for p in hasil["pets"]:
         print(f"    - id={p['pet_id']} type={p['type']} "
               f"name={p['display_name']!r} owner={p['owner_id']}")
+    if hasil.get("pets_by_command"):
+        print(f"  Pet per command: {hasil['pets_by_command']}")
     print(f"  RoomEvent diterima: {len(hasil['events'])}")
     for name, hx in hasil["events"]:
         print(f"    - {name}: {hx[:160]}")
