@@ -113,12 +113,16 @@ async def gift_join_room_once(session, email, password, device_id, pet_id,
         return hasil
 
     # --- alokasi ke server teman dulu (destinationUserId = join friend) ---
+    # Mode panel (hanya UUID target): bila target_server kosong, server +
+    # room diambil dari alokasi destinationUserId itu sendiri (alokasi itu
+    # menempatkan bot di server teman; gameServerId berisi server + room).
+    # Bila target_server diisi (mode diag lama), server harus cocok.
     chosen = None
     allocs = [alloc]
     srv0, room0 = parse_gsid(alloc.get("gameServerId", ""))
     print(f"[*] alokasi awal (tanpa dest): server={srv0} room={room0}")
     hasil["alloc_servers"].append(srv0)
-    if srv0 == target_server:
+    if target_server and srv0 == target_server:
         chosen = alloc
     if not chosen and dest_user_id:
         print(f"[*] coba alokasi destinationUserId={dest_user_id} "
@@ -129,7 +133,17 @@ async def gift_join_room_once(session, email, password, device_id, pet_id,
             srv, rm = parse_gsid(body.get("gameServerId", ""))
             hasil["alloc_servers"].append(srv)
             print(f"[*] alokasi destinationUserId: server={srv} room={rm}")
-            if srv == target_server:
+            if not target_server:
+                # Mode panel: percaya alokasi destinationUserId.
+                chosen = body
+                target_server = srv
+                if rm is not None:
+                    target_room = rm
+                hasil["target_server"] = target_server
+                hasil["target_room"] = target_room
+                print("[+] destinationUserId BERHASIL — bot dialokasikan "
+                      f"ke server teman ({srv} room {target_room})!")
+            elif srv == target_server:
                 chosen = body
                 print("[+] destinationUserId BERHASIL — bot dialokasikan "
                       "ke server teman!")
@@ -137,8 +151,8 @@ async def gift_join_room_once(session, email, password, device_id, pet_id,
                 print("[*] destinationUserId tidak mengembalikan server "
                       "target (mungkin field diabaikan / teman tidak "
                       "ditemukan) — lanjut ke alokasi ulang.")
-    # --- fallback: alokasi ulang sampai server cocok ---
-    if not chosen:
+    # --- fallback: alokasi ulang sampai server cocok (hanya bila target_server diisi) ---
+    if not chosen and target_server:
         for i in range(2, max_alloc_tries + 1):
             body = await allocate_once(session, user_jwt, datacenter="blr1")
             hasil["alloc_tries"] = i
@@ -154,9 +168,13 @@ async def gift_join_room_once(session, email, password, device_id, pet_id,
             await asyncio.sleep(0.5)
     hasil["alloc_tries"] = len(allocs)
     if not chosen:
-        print(f"[!] Server target {target_server} TIDAK didapat setelah "
-              f"{len(allocs)} alokasi. BERHENTI (tidak kirim gift dari "
-              f"server lain).")
+        if not target_server:
+            print("[!] destinationUserId tidak mengembalikan server teman. "
+                  "BERHENTI (tidak tahu server/room target).")
+        else:
+            print(f"[!] Server target {target_server} TIDAK didapat setelah "
+                  f"{len(allocs)} alokasi. BERHENTI (tidak kirim gift dari "
+                  f"server lain).")
         return hasil
     hasil["server_matched"] = True
     host, port = L.find_host_port(chosen)
@@ -273,11 +291,9 @@ async def main():
     ap.add_argument("--pet-id", default=os.getenv("GIFT_PET_ID", ""))
     ap.add_argument("--recipient", default=os.getenv("GIFT_RECIPIENT", ""))
     ap.add_argument("--target-server",
-                    default=os.getenv(
-                        "GIFT_TARGET_SERVER",
-                        "pkxd-tb-prod-1.94.0-main-vvz4s-vh7s7"))
+                    default=os.getenv("GIFT_TARGET_SERVER", ""))
     ap.add_argument("--target-room", type=int,
-                    default=int(os.getenv("GIFT_TARGET_ROOM", "7")))
+                    default=int(os.getenv("GIFT_TARGET_ROOM", "0")))
     ap.add_argument("--dest-user-id",
                     default=os.getenv(
                         "GIFT_DEST_USER_ID",
@@ -326,6 +342,20 @@ async def main():
     print(f"  Total RoomEvent diterima: {len(hasil['events'])}")
     print(f"  Waktu total: {time.time() - t0:.0f} detik")
     print("=" * 56)
+    # Baris JSON mesin (untuk panel Pet Gift "Run Gift"): satu baris,
+    # mudah diparse dari log GitHub Actions tanpa regex rapuh.
+    print("GIFT_JSON: " + json.dumps({
+        "email": hasil["email"],
+        "pet_id": hasil["pet_id"],
+        "recipient": hasil["recipient"],
+        "server": hasil["target_server"],
+        "room": hasil["target_room"],
+        "server_matched": hasil["server_matched"],
+        "joined_room": hasil["joined_room"],
+        "sent": hasil["sent"],
+        "successful": hasil["successful"],
+        "error": hasil["error"],
+    }, ensure_ascii=False))
     return 0
 
 
