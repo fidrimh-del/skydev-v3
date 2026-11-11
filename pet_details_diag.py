@@ -194,6 +194,8 @@ async def pet_details_once(session, email, password, device_id, wait_seconds):
 
 
 async def main():
+    # Baca versi game/protokol dari dashboard panel (app_settings).
+    L.apply_panel_versions()
     ap = argparse.ArgumentParser()
     ap.add_argument("--email", default=os.getenv("PETDETAILS_EMAIL", ""))
     ap.add_argument("--password", default=os.getenv("PETDETAILS_PASSWORD", ""))

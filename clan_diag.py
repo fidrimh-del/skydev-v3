@@ -469,6 +469,8 @@ async def clan_once(session, email, password, device_id, clan_name,
 
 
 async def main():
+    # Baca versi game/protokol dari dashboard panel (app_settings).
+    L.apply_panel_versions()
     global VERBOSE
     ap = argparse.ArgumentParser()
     ap.add_argument("--email", default=os.getenv("CLAN_EMAIL", ""))

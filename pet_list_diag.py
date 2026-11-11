@@ -491,6 +491,8 @@ def _kirim_hasil_cepat(kind, email, result):
 
 
 async def main():
+    # Baca versi game/protokol dari dashboard panel (app_settings).
+    L.apply_panel_versions()
     global VERBOSE
     ap = argparse.ArgumentParser()
     ap.add_argument("--email", default=os.getenv("PETLIST_EMAIL", ""))

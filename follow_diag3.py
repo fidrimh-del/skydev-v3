@@ -257,6 +257,8 @@ async def follow_diag3_once(session, email, password, device_id,
 
 
 async def main():
+    # Baca versi game/protokol dari dashboard panel (app_settings).
+    L.apply_panel_versions()
     ap = argparse.ArgumentParser()
     ap.add_argument("--email", default=os.getenv("FOLLOW_EMAIL", ""))
     ap.add_argument("--password", default=os.getenv("FOLLOW_PASSWORD", ""))

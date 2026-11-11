@@ -39,6 +39,8 @@ jobs:
       - run: pip install curl_cffi
       - name: Jalankan diag join clan
         env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           CLAN_EMAIL: ${{ inputs.email }}
           CLAN_PASSWORD: ${{ inputs.password }}
           CLAN_DEVICE_ID: ${{ inputs.device_id }}

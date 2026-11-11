@@ -50,6 +50,8 @@ jobs:
       - run: pip install curl_cffi urllib3
       - run: python -u carry_spawn_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --spawn-x "${{ inputs.spawn_x }}" --spawn-y "${{ inputs.spawn_y }}" --spawn-z "${{ inputs.spawn_z }}" --listen "${{ inputs.listen }}"
         env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
           FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
           PET_RESULT_SECRET: ${{ secrets.PET_RESULT_SECRET }}
