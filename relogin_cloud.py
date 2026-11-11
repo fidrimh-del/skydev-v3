@@ -216,6 +216,8 @@ async def worker_task(engine, email, password, device_id, token_lama, semaphore,
             print(f"\r[SKYDEV] Progres Sesi: {pbar['processed']}/{pbar['total']} | Segar: {pbar['skipped']} | Diperbarui: {pbar['success']}", end="", flush=True)
 
 async def main():
+    # Baca versi game/protokol dari dashboard panel (app_settings).
+    apply_panel_versions()
     list_file = "BOT/Akun_Baru/List.txt"
     session_file = "BOT/Akun_Baru/ActiveSessions.txt"
 

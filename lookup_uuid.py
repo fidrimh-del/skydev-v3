@@ -674,6 +674,8 @@ def probe_bot():
 
 
 async def main():
+    # Baca versi game/protokol dari dashboard panel (app_settings).
+    apply_panel_versions()
     name = resolve_name(sys.argv)
     if not name:
         print("[!] Nama pemain wajib diisi.")
