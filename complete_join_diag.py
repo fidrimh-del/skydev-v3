@@ -8,35 +8,39 @@ lokal: iterasi UsersInRoom lalu invoke callback lokal). Jadi tidak ada
 pesan "GetExistingPlayers" yang bisa disalin. Tapi disassembly menemukan
 DUA hal yang client asli kirim sesudah join dan bot TIDAK PERNAH kirim:
   (a) SendDeviceId (0x74AB574): deviceId sebagai byte UTF-8 via
-      EmitRoomEvent (reliable). Nama event tidak terbukti statis
-      (kandidat 'deviceid' / 'device_id'); tes ini coba 'deviceid' dulu.
+      EmitRoomEvent (reliable). Nama event TERBUKTI: 'Analytics/deviceId'
+      (audit relokasi 2026-11-12; 'deviceid'/'device_id' SALAH).
   (b) User variable (0x74B5290 SendLocalPlayerStateLogicalUpdateMessage):
       variabel state pemain lokal dikirim sebagai RoomEvent via
       LocalUserVariablesFeature.EmitEvent -> EmitRoomEvent (reliable).
       Format serialisasi NILAI terbukti (DefaultUserVariableSerializer):
       byte[0]=tag (1=string ASCII, 2=int 4 byte BIG-ENDIAN, 3=bool 1 byte,
-      4=byte 1 byte). Slug event kandidat terkuat 'uv' (literal ada di
-      metadata) tapi BELUM terbukti statis. Pembungkus single update
-      TERBUKTI (disassembly dump BARU): [BE32(name_len)][nama ASCII]
+      4=byte 1 byte). Slug event TERBUKTI: 'tbulv'
+      (LocalUserVariablesFeature.ctor hardcode 'tbulv'; 'uv' SALAH —
+      audit relokasi 2026-11-12). Pembungkus single update TERBUKTI
+      (disassembly dump BARU): [BE32(name_len)][nama ASCII]
       [variable: tag+nilai], TANPA sequence, TANPA prefix panjang
       variable — BUKAN protobuf (wrapper protobuf lama SALAH, diperbaiki
       2026-11-12). Tes ini kirim SATU variabel bool "sr"
       (subscriber)=true. Kunci variabel HARUS kunci pendek dari dump
       ("sr", bukan "subscriber"; "D" untuk role, "rt" untuk tier).
 Alur tes: login -> alokasi destinationUserId (kontol) -> TCP login ->
-JoinRoom -> smart spawn (activity = Y terendah) -> kirim deviceid ->
-dengar 5 dtk -> kirim 'uv' -> dengar 5 dtk -> invite gendong + ACC
-telat 6 dtk -> dengar 60 dtk. Bartes online di Sekolah dan cek di game
-apakah wujud bot terlihat / apakah dia tergendong.
+(server auto-place; JoinedRoom dari batch 0x0d — TIDAK kirim JoinRoom
+eksplisit, ditolak 060003) -> smart spawn (activity = Y terendah) ->
+kirim 'Analytics/deviceId' -> dengar 5 dtk -> kirim 'tbulv' (var "sr")
+-> dengar 5 dtk -> invite gendong + ACC telat 6 dtk -> dengar 60 dtk.
+Bartes online di Sekolah dan cek di game apakah wujud bot terlihat /
+apakah dia tergendong.
 Deteksi RoomUserUpdate: format wire-nya TIDAK diketahui (server->client
 saat pemain terdaftar). Detektor heuristik: frame/event BARU yang muncul
-sesudah kirim deviceid/'uv', ATAU frame yang mengandung UUID kontol /
-UUID bot sebagai string UTF-8 (RoomUserUpdate berisi UUID pemain).
-Verdict utama tetap cek in-game Bartes, bukan log.
-KONTRADIKSI (jujur): Plaza v1 BERHASIL tanpa deviceid/'uv'/posisi;
-Sekolah v2 GAGAL dengan posisi. Jadi deviceid/'uv' mungkin BUKAN
-penentu di Sekolah — tapi ini kandidat terbaik untuk "apa yang tidak
-dikirim bot", dan tes ini yang akan membuktikannya.
+sesudah kirim 'Analytics/deviceId'/'tbulv', ATAU frame yang mengandung
+UUID kontol / UUID bot sebagai string UTF-8 (RoomUserUpdate berisi UUID
+pemain). Verdict utama tetap cek in-game Bartes, bukan log.
+KOREKSI PENTING (audit 2026-11-12): tes complete-join SEBELUMNYA
+(run 43204259273) gagal BUKAN karena variable bukan kunci, melainkan
+karena DUA nama event SALAH ('deviceid' dan 'uv' — keduanya diabaikan
+server) + wrapper protobuf SALAH + nama variabel "subscriber" SALAH.
+Tes ini mengulang dengan nama event + wrapper + kunci yang BENAR.
 """
 import argparse
 import asyncio
@@ -231,6 +235,24 @@ def smart_spawn(fr, server, seconds=5):
             f"main-paling-sering({n}x) dari {len(observed)}")
 
 
+def find_joinedroom_in_frames(frames, rm):
+    """Cari konfirmasi JoinedRoom untuk room `rm` di daftar frame.
+    Mencakup: (a) frame standalone 0x06 [0x06][0x01][room 4 byte], dan
+    (b) sub-pesan JoinedRoom yang tertanam di frame batch 0x0d
+    (needle 06 01 + room). Kembalikan True bila ketemu.
+    PERBAIKAN (audit Bartes 2026-11-12): client asli TIDAK kirim
+    JoinRoom eksplisit — server menempatkan bot di room saat TCP login
+    (dari alokasi lobby destinationUserId); JoinedRoom tiba di batch
+    0x0d pada jendela login. JoinRoom eksplisit ditolak 060003."""
+    needle = bytes([0x06, 0x01]) + rm.to_bytes(4, "big")
+    for fr in frames:
+        if len(fr) >= 6 and fr[0] == 0x06 and fr[1] == 1 and int.from_bytes(fr[2:6], "big") == rm:
+            return True
+        if fr and fr[0] == 0x0d and needle in bytes(fr):
+            return True
+    return False
+
+
 def build_uservar(name, var_tag, var_value_bytes):
     """Pembungkus single update user variable (TERBUKTI via disassembly
     dump BARU, BUKAN protobuf): [BE32(name_len)][nama ASCII]
@@ -286,8 +308,8 @@ def listen_window(fr, t0, seconds, watch_uuids, state, label):
 
 async def complete_join_once(session, email, password, device_id,
                              dest_user_id, bot_user_id,
-                             device_event="deviceid",
-                             uv_event="uv", uv_name="sr",
+                             device_event="Analytics/deviceId",
+                             uv_event="tbulv", uv_name="sr",
                              invite_wait=6, listen_s=60):
     hasil = {"email": email, "dest_user_id": dest_user_id,
              "bot_user_id": bot_user_id,
@@ -337,34 +359,41 @@ async def complete_join_once(session, email, password, device_id,
         return hasil
     fr = G.FrameReader(sock)
     print("[*] tunggu jendela login (tbugv/JoinedRoom, maks 3 dtk)...")
-    got, closed = fr.read_until(
-        lambda f: G._is_tbugv(f) or G._is_joinedroom(f), 3)
+    needle = bytes([0x06, 0x01]) + rm.to_bytes(4, "big")
+
+    def _is_join_or_tbugv(f):
+        if G._is_tbugv(f):
+            return True
+        if len(f) >= 6 and f[0] == 0x06 and f[1] == 1 and int.from_bytes(f[2:6], "big") == rm:
+            return True
+        if f and f[0] == 0x0d and needle in bytes(f):
+            return True
+        return False
+
+    got, closed = fr.read_until(_is_join_or_tbugv, 3)
     if closed:
         print("[!] koneksi tertutup saat tunggu login.")
         return hasil
     if got is not None and G._is_tbugv(got):
         time.sleep(1)
-    print(f"[*] kirim JoinRoom({rm}) ...")
-    try:
-        sock.sendall(L.build_join_frame(rm))
-    except Exception as exc:
-        print(f"[!] kirim JoinRoom gagal: {exc}")
-        return hasil
-
-    def _is_target_room(f):
-        return (len(f) >= 6 and f[0] == 0x06 and f[1] == 1
-                and int.from_bytes(f[2:6], "big") == rm)
-
-    joined, closed = fr.read_until(_is_target_room, 4)
-    if closed:
-        print("[!] koneksi tertutup saat JoinRoom.")
-        return hasil
+    # TIDAK kirim JoinRoom eksplisit (PERBAIKAN audit 2026-11-12):
+    # client asli tidak kirim JoinRoom; server auto-place dari alokasi
+    # lobby dan JoinedRoom tiba di batch 0x0d pada jendela login.
+    # JoinRoom eksplisit ditolak 060003. Cek JoinedRoom dari frame yang
+    # sudah didapat + drain singkat sesudahnya.
     t0 = time.time()
-    if joined is not None:
+    joined_here = False
+    if got is not None and not G._is_tbugv(got):
+        joined_here = True
+    if not joined_here:
+        extra = fr.drain(2)
+        joined_here = find_joinedroom_in_frames(extra, rm)
+    if joined_here:
         hasil["joined_room"] = rm
-        print(f"[+] JoinedRoom({rm}) TERKONFIRMASI.")
+        print(f"[+] JoinedRoom({rm}) TERKONFIRMASI (batch 0x0d / standalone).")
     else:
-        print("[!] TIDAK ada konfirmasi JoinedRoom — tetap lanjut.")
+        print("[!] JoinedRoom tidak ketemu di jendela login — tetap lanjut "
+              "(server auto-place; tbulv akan membuktikan).")
     # SMART SPAWN (seperti carry v2).
     sx, sy, sz, smode = smart_spawn(fr, srv, seconds=5)
     hasil["spawn_pos"] = [round(sx, 2), round(sy, 2), round(sz, 2)]
@@ -393,7 +422,7 @@ async def complete_join_once(session, email, password, device_id,
     except Exception as exc:
         print(f"[!] kirim SendDeviceId gagal: {exc}")
     listen_window(fr, t0, 5, watch, state, "deviceid")
-    # (2) User variable 'uv': SATU variabel bool "sr" (subscriber)=true.
+    # (2) User variable 'tbulv': SATU variabel bool "sr" (subscriber)=true.
     # PERBAIKAN: nama kunci "sr" (UserVariableSubscriberKey), BUKAN
     # "subscriber"; wrapper biner BENAR (bukan protobuf).
     try:
@@ -405,12 +434,12 @@ async def complete_join_once(session, email, password, device_id,
               f"var '{uv_name}' bool=true (t+{hasil['uv_t_rel']} dtk).")
     except Exception as exc:
         print(f"[!] kirim user variable gagal: {exc}")
-    listen_window(fr, t0, 5, watch, state, "uv")
+    listen_window(fr, t0, 5, watch, state, "tbulv")
     hasil["room_user_update"] = state["room_user_update"]
     hasil["new_events"] = state["new_events"]
     hasil["event_names"] = state["event_names"]
     hasil["frame_types"] = {str(k): v for k, v in state["frame_types"].items()}
-    print(f"[*] Sesudah deviceid+'uv': RoomUserUpdate terlihat = "
+    print(f"[*] Sesudah deviceid+'tbulv': RoomUserUpdate terlihat = "
           f"{hasil['room_user_update']['seen']} "
           f"(pertama: {hasil['room_user_update']['first_after']}).")
     # Kirim invite gendong ke target (bot sebagai pengundang).
@@ -514,8 +543,8 @@ async def main():
                     default=os.getenv("COMPLETE_DEST_USER_ID", KONTOL_UUID))
     ap.add_argument("--bot-user-id",
                     default=os.getenv("COMPLETE_BOT_USER_ID", BOT_UUID))
-    ap.add_argument("--device-event", default="deviceid")
-    ap.add_argument("--uv-event", default="uv")
+    ap.add_argument("--device-event", default="Analytics/deviceId")
+    ap.add_argument("--uv-event", default="tbulv")
     ap.add_argument("--uv-name", default="sr")
     ap.add_argument("--invite-wait", type=float, default=6)
     ap.add_argument("--listen", type=float, default=60)
