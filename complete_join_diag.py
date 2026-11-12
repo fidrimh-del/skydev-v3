@@ -16,10 +16,13 @@ DUA hal yang client asli kirim sesudah join dan bot TIDAK PERNAH kirim:
       Format serialisasi NILAI terbukti (DefaultUserVariableSerializer):
       byte[0]=tag (1=string ASCII, 2=int 4 byte BIG-ENDIAN, 3=bool 1 byte,
       4=byte 1 byte). Slug event kandidat terkuat 'uv' (literal ada di
-      metadata) tapi BELUM terbukti statis. Pembungkus update (sequence +
-      variableName + variable) ditebak sebagai protobuf: f1=sequence
-      (varint), f2=variableName (string), f3=variable (bytes berisi
-      tag+nilai). Tes ini kirim SATU variabel bool "subscriber"=true.
+      metadata) tapi BELUM terbukti statis. Pembungkus single update
+      TERBUKTI (disassembly dump BARU): [BE32(name_len)][nama ASCII]
+      [variable: tag+nilai], TANPA sequence, TANPA prefix panjang
+      variable — BUKAN protobuf (wrapper protobuf lama SALAH, diperbaiki
+      2026-11-12). Tes ini kirim SATU variabel bool "sr"
+      (subscriber)=true. Kunci variabel HARUS kunci pendek dari dump
+      ("sr", bukan "subscriber"; "D" untuk role, "rt" untuk tier).
 Alur tes: login -> alokasi destinationUserId (kontol) -> TCP login ->
 JoinRoom -> smart spawn (activity = Y terendah) -> kirim deviceid ->
 dengar 5 dtk -> kirim 'uv' -> dengar 5 dtk -> invite gendong + ACC
@@ -228,18 +231,19 @@ def smart_spawn(fr, server, seconds=5):
             f"main-paling-sering({n}x) dari {len(observed)}")
 
 
-def build_uservar_uv(sequence, var_name, var_tag, var_value_bytes):
-    """Pembungkus update user variable (TEBAKAN TERBAIK, belum terbukti):
-    protobuf f1=sequence (varint), f2=variableName (string),
-    f3=variable (bytes: tag + nilai, format DefaultUserVariableSerializer).
-    tag: 1=string ASCII, 2=int 4 byte BIG-ENDIAN, 3=bool 1 byte,
-    4=byte 1 byte."""
-    var_serialized = bytes([var_tag]) + var_value_bytes
-    pb = b""
-    pb += b"\x08" + _varint(sequence)          # f1 sequence
-    pb += _sfield(2, var_name)                # f2 variableName
-    pb += _bfield(3, var_serialized)          # f3 variable (tag+nilai)
-    return pb
+def build_uservar(name, var_tag, var_value_bytes):
+    """Pembungkus single update user variable (TERBUKTI via disassembly
+    dump BARU, BUKAN protobuf): [BE32(name_len)][nama ASCII]
+    [variable: tag+nilai]. Tanpa sequence, tanpa prefix panjang variable.
+    Format [sequence][name_len][nama][var_len][var] adalah BULK
+    (RefreshVariablesBulk), bukan single update.
+    Tag: 1=string ASCII, 2=int 4 byte BIG-ENDIAN, 3=bool 1 byte,
+    4=byte 1 byte.
+    PERBAIKAN 2026-11-12 (Bartes): wrapper protobuf lama SALAH — server
+    parse 4 byte pertama sebagai name_len raksasa lalu abaikan pesan."""
+    name_b = name.encode("ascii")
+    return (struct.pack(">I", len(name_b)) + name_b
+            + bytes([var_tag]) + var_value_bytes)
 
 
 def listen_window(fr, t0, seconds, watch_uuids, state, label):
@@ -283,7 +287,7 @@ def listen_window(fr, t0, seconds, watch_uuids, state, label):
 async def complete_join_once(session, email, password, device_id,
                              dest_user_id, bot_user_id,
                              device_event="deviceid",
-                             uv_event="uv", uv_name="subscriber",
+                             uv_event="uv", uv_name="sr",
                              invite_wait=6, listen_s=60):
     hasil = {"email": email, "dest_user_id": dest_user_id,
              "bot_user_id": bot_user_id,
@@ -389,9 +393,11 @@ async def complete_join_once(session, email, password, device_id,
     except Exception as exc:
         print(f"[!] kirim SendDeviceId gagal: {exc}")
     listen_window(fr, t0, 5, watch, state, "deviceid")
-    # (2) User variable 'uv': SATU variabel bool "subscriber"=true.
+    # (2) User variable 'uv': SATU variabel bool "sr" (subscriber)=true.
+    # PERBAIKAN: nama kunci "sr" (UserVariableSubscriberKey), BUKAN
+    # "subscriber"; wrapper biner BENAR (bukan protobuf).
     try:
-        uv_pb = build_uservar_uv(1, uv_name, 3, b"\x01")
+        uv_pb = build_uservar(uv_name, 3, b"\x01")
         sock.sendall(L.build_room_event_varint(uv_event, uv_pb))
         hasil["uv_sent"] = True
         hasil["uv_t_rel"] = round(time.time() - t0, 1)
@@ -510,7 +516,7 @@ async def main():
                     default=os.getenv("COMPLETE_BOT_USER_ID", BOT_UUID))
     ap.add_argument("--device-event", default="deviceid")
     ap.add_argument("--uv-event", default="uv")
-    ap.add_argument("--uv-name", default="subscriber")
+    ap.add_argument("--uv-name", default="sr")
     ap.add_argument("--invite-wait", type=float, default=6)
     ap.add_argument("--listen", type=float, default=60)
     args = ap.parse_args()
