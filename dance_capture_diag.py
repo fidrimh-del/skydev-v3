@@ -42,6 +42,14 @@ def parse_gsid(gsid):
     return server, room
 
 
+
+def build_position_payload(x, y, z, rotation=0.0, teleported=1, sequence=0):
+    """Payload posisi 18 byte (event 'C'): [Teleported][seq][X/Y/Z/Rot f32 BE]."""
+    import struct as _st
+    return (bytes([teleported & 0xFF, sequence & 0xFF])
+            + _st.pack(">f", x) + _st.pack(">f", y)
+            + _st.pack(">f", z) + _st.pack(">f", rotation))
+
 async def allocate_to_user(session, jwt, dest_user_id):
     body = {"userToken": jwt,
             "gameServerProtocolVersion": L.GAME_PROTOCOL,
@@ -129,8 +137,26 @@ async def capture_once(session, email, password, device_id,
         joined_here = find_joinedroom_in_frames(extra, rm)
     hasil["joined_room"] = rm if joined_here else None
     print(f"[+] JoinedRoom({rm}) = {joined_here}. Mendengar SEMUA event {listen_s} dtk — Bartes dance sekarang...")
+    # Berdiri di samping Bartes via event 'C' (18 byte) + heartbeat.
+    _px, _py, _pz = -79.99, 21.96, -76.42
+    _seq = [0]
+    try:
+        _pos = build_position_payload(_px, _py, _pz, teleported=1, sequence=0)
+        sock.sendall(L.build_room_event_varint("C", _pos))
+        print(f"[+] Posisi 'C' terkirim ({_px},{_py},{_pz}) Teleported=1.")
+    except Exception as exc:
+        print(f"[!] kirim posisi 'C' gagal: {exc}")
     end = time.time() + listen_s
+    _last_hb = time.time()
     while time.time() < end:
+        if time.time() - _last_hb >= 1.0:
+            try:
+                _seq[0] = (_seq[0] + 1) & 0xFF
+                _pos = build_position_payload(_px, _py, _pz, teleported=0, sequence=_seq[0])
+                sock.sendall(L.build_room_event_varint("C", _pos))
+                _last_hb = time.time()
+            except Exception:
+                pass
         for f in fr.drain(0.5):
             raw = bytes(f)
             ftype = raw[0] if raw else None
