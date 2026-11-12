@@ -2,7 +2,7 @@ name: DIAG Role Change — bot ubah role jadi CreatorUgc
 
 # Tes role (2026-11-12, Bartes): bot pkxdshop join server SkyDev di world
 # utama (Plaza), kirim role "D"=CreatorUgc (4) + tier "rt"=Legendary (3)
-# sebagai user variable ByteVariable via RoomEvent 'uv' dengan pembungkus
+# sebagai user variable ByteVariable via RoomEvent 'tbulv' dengan pembungkus
 # biner yang BENAR ([BE32(name_len)][nama][tag+nilai]) — BUKAN protobuf
 # (wrapper protobuf lama SALAH dan diabaikan server). Bot tetap online
 # 90 dtk supaya Bartes (SkyDev) bisa cek di game apakah bot tampil
@@ -38,13 +38,13 @@ on:
         required: false
         default: "3"
       device_event:
-        description: "Nama event SendDeviceId"
+        description: "Nama event SendDeviceId (TERBUKTI: 'Analytics/deviceId')"
         required: false
-        default: "deviceid"
+        default: "Analytics/deviceId"
       uv_event:
-        description: "Nama event user variable"
+        description: "Nama event user variable (TERBUKTI: 'tbulv')"
         required: false
-        default: "uv"
+        default: "tbulv"
       listen:
         description: "Bot online berapa detik (Bartes cek role)"
         required: false
