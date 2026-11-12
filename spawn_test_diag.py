@@ -124,6 +124,19 @@ def parse_protobuf(buf):
     return out
 
 
+def build_position_payload(x, y, z, rotation=0.0, teleported=1, sequence=0):
+    """Payload posisi BENAR (disassembly 2026-11-12, GetPositionStateObject
+    RVA 0x74C29C4): 18 byte mentah, BUKAN protobuf, BUKAN 'tbulv'/'aaa'.
+    Layout: [Teleported 1B][sequence 1B][X f32 BE][Y f32 BE][Z f32 BE]
+    [Rotation f32 BE]. Dikirim sebagai RoomEvent event 'C' (slot
+    0x8902858; nama dari .rela.dyn addend 0x8B0FA50 -> literal 'C').
+    Spawn: Teleported=1 (snap tanpa interpolasi), sequence mulai 0 naik
+    tiap kirim (wrap 255). Float BIG-ENDIAN (struct '>f')."""
+    return (bytes([teleported & 0xFF, sequence & 0xFF])
+            + struct.pack(">f", x) + struct.pack(">f", y)
+            + struct.pack(">f", z) + struct.pack(">f", rotation))
+
+
 def build_spawn_aaa(x, y, z, player_id=None, simple=False):
     """Frame posisi 'aaa' (tbulv). Perbaikan 2026-11-12 (Bartes): frame
     'tbulv' ASLI dari pemain lain punya prefix `00 06 <ID-2byte>` sebelum
@@ -271,27 +284,44 @@ async def spawn_test_once(session, email, password, device_id,
         sx, sy, sz, smode = town_square_spawn()
     hasil["spawn_pos"] = [round(sx, 2), round(sy, 2), round(sz, 2)]
     hasil["spawn_mode"] = smode
+    # POSISI BENAR via event 'C' (18 byte) — BUKAN 'tbulv'/'aaa'.
+    # 'aaa' hanya user-variable/state; posisi = payload 18 byte terpisah.
+    # Teleported=1 (spawn snap), sequence mulai 0. Frame 'tbulv' tetap
+    # dikirim sekali (memperbaiki state idle, terbukti) tapi posisi
+    # HANYA lewat 'C'.
+    pos_seq = [0]
     try:
         data = build_spawn_aaa(sx, sy, sz, player_id=pid, simple=simple)
         sock.sendall(L.build_room_event_varint("tbulv", data))
-        print(f"[+] Posisi spawn terkirim ({sx:.2f},{sy:.2f},{sz:.2f}) [{smode}] "
-              f"dengan prefix 00 06 {pid & 0xFFFF:04x}.")
-        print(f"    frame 'aaa' hex: {data.hex()}")
+        print(f"[+] Frame 'tbulv' terkirim (state idle).")
     except Exception as exc:
-        print(f"[!] kirim spawn gagal: {exc}")
+        print(f"[!] kirim tbulv gagal: {exc}")
+    try:
+        pos = build_position_payload(sx, sy, sz, rotation=0.0,
+                                     teleported=1, sequence=pos_seq[0])
+        sock.sendall(L.build_room_event_varint("C", pos))
+        print(f"[+] Posisi spawn terkirim via event 'C' ({sx:.2f},{sy:.2f},{sz:.2f}) [{smode}] Teleported=1 seq=0.")
+        print(f"    payload 'C' hex: {pos.hex()}")
+    except Exception as exc:
+        print(f"[!] kirim posisi 'C' gagal: {exc}")
     state = {"event_names": {}, "frame_types": {}, "seen_events": set(),
              "new_events": [],
              "room_user_update": dict(hasil["room_user_update"])}
     watch = [dest_user_id, bot_user_id]
 
-    # Heartbeat posisi: kirim ulang frame "aaa" tiap 1,0 dtk selama
-    # mendengarkan. PERBAIKAN (hipotesis Bartes 2026-11-12): bot kirim
-    # posisi SEKALI saja lalu tetap di bawah tanah — client asli kirim
-    # posisi kontinu ~9,3x/detik; server mungkin butuh update kontinu
-    # agar posisi "menempel". Frame yang dikirim ulang = data spawn.
-    spawn_frame = build_spawn_aaa(sx, sy, sz, player_id=pid, simple=simple)
+    # Heartbeat posisi: kirim ulang payload 'C' 18 byte tiap 1,0 dtk
+    # selama mendengarkan (sequence naik tiap kirim, wrap 255).
+    # Client asli kirim posisi kontinu ~9,3x/detik; server mungkin butuh
+    # update kontinu agar posisi "menempel". Teleported=1 hanya di
+    # kirim pertama (spawn snap); heartbeat pakai Teleported=0.
     hasil["heartbeat_s"] = 1.0
     hasil["heartbeat_sent"] = 0
+    hasil["pos_event"] = "C"
+
+    def _pos_frame():
+        pos_seq[0] = (pos_seq[0] + 1) & 0xFF
+        return build_position_payload(sx, sy, sz, rotation=0.0,
+                                      teleported=0, sequence=pos_seq[0])
 
     def _listen(seconds, label, heartbeat=None):
         end = time.time() + seconds
@@ -299,7 +329,7 @@ async def spawn_test_once(session, email, password, device_id,
         while time.time() < end:
             if heartbeat is not None and time.time() - last_hb >= 1.0:
                 try:
-                    sock.sendall(L.build_room_event_varint("tbulv", heartbeat))
+                    sock.sendall(L.build_room_event_varint("C", _pos_frame()))
                     hasil["heartbeat_sent"] += 1
                     last_hb = time.time()
                 except Exception:
@@ -346,7 +376,7 @@ async def spawn_test_once(session, email, password, device_id,
               f"deviceId='{send_dev}' (t+{hasil['deviceid_t_rel']} dtk).")
     except Exception as exc:
         print(f"[!] kirim SendDeviceId gagal: {exc}")
-    _listen(3, "deviceid", heartbeat=spawn_frame)
+    _listen(3, "deviceid", heartbeat=True)
     hasil["room_user_update"] = state["room_user_update"]
     hasil["new_events"] = state["new_events"]
     hasil["event_names"] = state["event_names"]
@@ -354,7 +384,7 @@ async def spawn_test_once(session, email, password, device_id,
     print(f"[*] Bot tetap online {listen_s} dtk supaya Bartes bisa cek "
           f"apakah bot muncul di town square. Mendengarkan + heartbeat "
           f"posisi tiap 1 dtk...")
-    _listen(listen_s, "spawn-check", heartbeat=spawn_frame)
+    _listen(listen_s, "spawn-check", heartbeat=True)
     hasil["room_user_update"] = state["room_user_update"]
     hasil["new_events"] = state["new_events"]
     hasil["event_names"] = state["event_names"]
