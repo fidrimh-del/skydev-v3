@@ -29,6 +29,12 @@ Latar (2026-11-12, Bartes):
 - BATASAN: bot TIDAK bisa jalan (diam di titik spawn / 0,0,0). Jadi
   bot hanya bisa MENAHAN pemain di tempat bot berada, bukan membawa
   mereka ke mana-mana. Ini probe, bukan fitur gerak.
+- v2 (2026-11-12, Bartes): SMART SPAWN. Script ini sebelumnya TIDAK
+  PERNAH kirim posisi — bot diam di initial spawn server (awan /
+  bawah tanah di Sekolah & Plaza). Sekarang sesudah JoinRoom: dengar
+  tbulv 5 dtk, pilih titik spawn (activity = Y terendah / lantai;
+  main = posisi paling sering / titik tersibuk), kirim frame 'aaa'.
+  Fallback koordinat Plaza bila tak ada posisi teramati.
 - UUID bot TIDAK perlu ditebak: bawaan = PKXDSHOP #760
   (71056756-53c7-478e-9356-82c87fb2dd63), bisa di-override via argumen.
 """
@@ -167,12 +173,93 @@ def build_consent_response(sender_uuid, recipient_uuid, accepted=True,
     return pb
 
 
+def build_spawn_aaa(x, y, z):
+    """Frame 'aaa' posisi spawn (sama seperti Termux bot / join_full_diag).
+    v2 (2026-11-12): carry_invite_diag sebelumnya TIDAK PERNAH kirim
+    posisi sama sekali — bot diam di initial spawn server (awan /
+    bawah tanah). Sekarang kirim posisi smart spawn sebelum invite."""
+    f32 = lambda v: struct.pack("<f", v)
+    sub_y = bytes.fromhex("08f980a5ab05") + b"\x1d" + f32(y)
+    sub_x = bytes.fromhex("089b87987010b3f2de61") + b"\x1d" + f32(x)
+    sub_r = bytes.fromhex(
+        "08ffffffffffffffffff0110ffffffffffffffffff01")
+    sub_z = bytes.fromhex("08a2b0b7b0fdffffffff01") + b"\x1d" + f32(z)
+    sub_v = bytes.fromhex(
+        "08ffffffffffffffffff0110ffffffffffffffffff01")
+    pb = b""
+    for field, sub in ((1, sub_y), (2, sub_x), (3, sub_r),
+                       (4, sub_z), (5, sub_v)):
+        pb += bytes([(field << 3) | 2, len(sub)]) + sub
+    return struct.pack(">I", 3) + b"aaa" + b"\x05" + pb
+
+
+def parse_tbulv_position(data):
+    """Ekstrak (x, y, z) dari payload tbulv masuk (d).
+    Layout: header 12 byte (00 02 <ID-2-byte> 00 00 00 03 'aaa' 05),
+    lalu protobuf: field 1 -> Y (sub-field 3), field 2 -> X,
+    field 4 -> Z. Kembalikan None bila gagal."""
+    if not data or len(data) < 13:
+        return None
+    try:
+        top = parse_protobuf(bytes(data[12:]))
+
+        def _f3(sub):
+            if isinstance(sub, (bytes, bytearray)):
+                inner = parse_protobuf(bytes(sub))
+                v = inner.get(3)
+                if isinstance(v, float):
+                    return v
+            return None
+
+        y = _f3(top.get(1))
+        x = _f3(top.get(2))
+        z = _f3(top.get(4))
+        if x is None or y is None or z is None:
+            return None
+        return (x, y, z)
+    except Exception:
+        return None
+
+
+def smart_spawn(fr, server, seconds=5):
+    """Dengarkan tbulv `seconds` dtk, pilih titik spawn.
+    Activity (Sekolah / world UGC): Y TERENDAH (lantai) — Plaza
+    Y=27.13 ada di atas awan di Sekolah.
+    Main world (Plaza): posisi PALING SERING teramati (titik
+    tersibuk, di atas tanah, bukan koordinat Plaza tetap yang
+    di bawah tanah).
+    Kembalikan (x, y, z, cara). Fallback: Plaza bila tak ada posisi.
+    """
+    from collections import Counter
+    observed = []
+    end = time.time() + seconds
+    while time.time() < end:
+        for f in fr.drain(0.5):
+            name, d = G.decode_room_event(f)
+            if name != "tbulv" or not d:
+                continue
+            pos = parse_tbulv_position(bytes(d))
+            if pos:
+                observed.append(pos)
+    if not observed:
+        return (79.96, 27.13, -122.17, "fallback-Plaza")
+    if "activity" in (server or ""):
+        x, y, z = min(observed, key=lambda p: p[1])
+        return (x + 2, y + 2, z + 2, f"activity-lowest-Y dari {len(observed)}")
+    counts = Counter((round(p[0]), round(p[1]), round(p[2]))
+                     for p in observed)
+    (rx, ry, rz), n = counts.most_common(1)[0]
+    return (rx + 2, ry + 2, rz + 2,
+            f"main-paling-sering({n}x) dari {len(observed)}")
+
+
 async def carry_invite_once(session, email, password, device_id,
                             dest_user_id, bot_user_id,
                             invite_wait=6, listen_s=60):
     hasil = {"email": email, "dest_user_id": dest_user_id,
              "bot_user_id": bot_user_id,
              "server": "", "room": None, "joined_room": None,
+             "spawn_pos": None, "spawn_mode": None,
              "invite_sent": False, "invite_t_rel": None,
              "late_acc_sent": False, "late_acc_t_rel": None,
              "accepted_observed": False,
@@ -236,6 +323,19 @@ async def carry_invite_once(session, email, password, device_id,
         print(f"[+] JoinedRoom({rm}) TERKONFIRMASI.")
     else:
         print("[!] TIDAK ada konfirmasi JoinedRoom — tetap lanjut.")
+    # SMART SPAWN (v2): dengarkan posisi pemain lain, pilih titik
+    # spawn yang masuk akal untuk server ini, kirim frame posisi.
+    # Tanpa ini bot diam di initial spawn (awan / bawah tanah).
+    sx, sy, sz, smode = smart_spawn(fr, srv, seconds=5)
+    hasil["spawn_pos"] = [round(sx, 2), round(sy, 2), round(sz, 2)]
+    hasil["spawn_mode"] = smode
+    try:
+        data = build_spawn_aaa(sx, sy, sz)
+        sock.sendall(L.build_room_event_varint("tbulv", data))
+        print(f"[+] Posisi spawn terkirim ({sx:.2f},{sy:.2f},{sz:.2f}) "
+              f"[{smode}].")
+    except Exception as exc:
+        print(f"[!] kirim spawn gagal: {exc}")
     # Kirim invite gendong ke target (bot sebagai pengundang).
     invite_pb = build_consent_invite(bot_user_id, dest_user_id, 0)
     try:
