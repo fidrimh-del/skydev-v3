@@ -21,6 +21,12 @@ Latar (2026-11-12, Bartes): bot join normal di Plaza tapi di Sekolah
   format apa), apakah ada RoomUserUpdate / daftar pemain, frame apa
   saja yang server kirim sesudah JoinRoom di activity.
 - Dipakai untuk merancang "join sangat lengkap" di Termux v3.6+.
+- v2 (2026-11-12, Bartes): FASE 0 join room BOT SENDIRI dulu (A/B —
+  log Termux v3.6: room sendiri TERKONFIRMASI, room kontol TIDAK);
+  JoinRoom 3x + deteksi GEMA: tiap frame 0x06 dibandingkan dengan
+  payload JoinRoom yang dikirim — gema = server kembalikan kiriman
+  bot sendiri ([0x06][room_id]), konfirmasi = [0x06][0x01][room_id].
+  Ini menjawab misteri 3 frame 0x06 di log v3.6.
 """
 import argparse
 import asyncio
@@ -112,6 +118,85 @@ def classify_frame(f):
     return (f"0x{b0:02x}", f"len={len(f)}")
 
 
+def analyze_0x06(f, sent_join_payload, rm):
+    """Analisis frame 0x06 -> deskripsi.
+    Hipotesis dari log Termux v3.6 (Bartes 16:07): bot kirim JoinRoom
+    3x ke room kontol, terima 3 frame 0x06 yang BUKAN konfirmasi —
+    diduga itu GEMA (echo) dari kiriman JoinRoom sendiri
+    ([0x06][room_id], 5 byte, tanpa byte sukses 0x01), sementara
+    konfirmasi asli berbentuk [0x06][0x01][room_id] (6 byte).
+    Bandingkan frame yang diterima dengan payload JoinRoom yang
+    dikirim untuk membedakan gema vs konfirmasi vs lainnya."""
+    if not f or f[0] != 0x06:
+        return "bukan-0x06"
+    if sent_join_payload is not None and bytes(f) == bytes(sent_join_payload):
+        return "ECHO-JoinRoom-send"
+    if len(f) >= 6 and f[1] == 1:
+        got_rm = int.from_bytes(f[2:6], "big")
+        if got_rm == rm:
+            return "JoinedRoom-KONFIRMASI"
+        return f"JoinedRoom-room-lain({got_rm})"
+    return f"0x06-lain(len={len(f)},b1={f[1]:#04x})"
+
+
+async def join_room_once(sock, fr, rm, label, t0, hasil,
+                         max_attempts=3, wait_s=4):
+    """Kirim JoinRoom sampai max_attempts; rekam SEMUA frame + analisis
+    tiap frame 0x06 (gema vs konfirmasi). Kembalikan dict hasil."""
+    out = {"label": label, "room": rm, "attempts": 0,
+           "confirmed": False, "frames_0x06": [], "frames": [],
+           "echo_count": 0, "confirm_hex": None}
+    sent_payload = L.build_join_frame(rm)
+    # Payload JoinRoom (tanpa prefix panjang) untuk deteksi gema.
+    sent_inner = bytes(sent_payload[4:])
+    for attempt in (1, 2, 3)[:max_attempts]:
+        out["attempts"] = attempt
+        try:
+            sock.sendall(sent_payload)
+        except Exception as exc:
+            print(f"[!] kirim JoinRoom({rm}) gagal: {exc}")
+            break
+        print(f"[*] JoinRoom({rm}) percobaan {attempt}/{max_attempts} "
+              f"[{label}] ...")
+        end = time.time() + wait_s
+        while time.time() < end:
+            for f in fr.drain(0.5):
+                tag = analyze_0x06(f, sent_inner, rm)
+                if f and f[0] == 0x06:
+                    out["frames_0x06"].append({
+                        "t_rel": round(time.time() - t0, 1),
+                        "tag": tag, "hex": bytes(f).hex(),
+                        "len": len(f)})
+                    if tag == "ECHO-JoinRoom-send":
+                        out["echo_count"] += 1
+                    if tag == "JoinedRoom-KONFIRMASI":
+                        out["confirmed"] = True
+                        out["confirm_hex"] = bytes(f).hex()
+                lab, ring = classify_frame(f)
+                out["frames"].append({
+                    "t_rel": round(time.time() - t0, 1),
+                    "label": lab, "ring": ring,
+                    "hex": bytes(f)[:48].hex()})
+                if lab.startswith("RoomEvent:"):
+                    nm = lab.split(":", 1)[1]
+                    hasil["event_names"][nm] = \
+                        hasil["event_names"].get(nm, 0) + 1
+                if tag == "JoinedRoom-KONFIRMASI":
+                    print(f"[+] JoinedRoom({rm}) TERKONFIRMASI "
+                          f"[{label}] hex={bytes(f).hex()}")
+                    return out
+            # drain habis -> lanjut sampai end
+        if out["confirmed"]:
+            break
+        if attempt < max_attempts:
+            print(f"[*] Belum ada konfirmasi [{label}] — kirim ulang.")
+    if not out["confirmed"]:
+        print(f"[!] JoinedRoom({rm}) TIDAK terkonfirmasi sesudah "
+              f"{out['attempts']}x [{label}]. 0x06 diterima: "
+              f"{len(out['frames_0x06'])} (gema: {out['echo_count']}).")
+    return out
+
+
 async def join_full_once(session, email, password, device_id,
                          dest_user_id, bot_user_id, listen_s):
     hasil = {"email": email, "dest_user_id": dest_user_id,
@@ -119,12 +204,46 @@ async def join_full_once(session, email, password, device_id,
              "joined_room": None, "joined_room_frame_hex": None,
              "login_window_frames": [], "join_window_frames": [],
              "post_spawn_frames": [], "event_names": {},
-             "tbulv_player_ids": [], "room_user_update_seen": False}
+             "tbulv_player_ids": [], "room_user_update_seen": False,
+             "own_room_join": None, "dest_room_join": None}
     user_jwt, alloc = await L.login_and_allocate(email, password, device_id,
                                                  session)
     if not alloc:
         print("[!] login/alokasi gagal.")
         return hasil
+    # FASE 0 (BARU, v2): join room BOT SENDIRI dulu (alokasi login) —
+    # pembanding A/B. Log Termux v3.6: room sendiri TERKONFIRMASI,
+    # room kontol TIDAK. Bila diag ini mereproduksi pola yang sama,
+    # perbedaan ada di jalur join (own vs destinationUserId), bukan
+    # di environment (Termux vs GitHub Actions).
+    own_srv, own_rm = parse_gsid(alloc.get("gameServerId", ""))
+    print(f"[+] Alokasi bot sendiri: server={own_srv} room={own_rm}")
+    if own_srv and own_rm is not None:
+        own_host, own_port = L.find_host_port(alloc)
+        if own_host and own_port:
+            own_sock, _pid = L.tcp_connect(own_host, own_port)
+            if own_sock is not None:
+                try:
+                    own_sock.sendall(L.build_login_frame(user_jwt))
+                except Exception as exc:
+                    print(f"[!] kirim login frame (own) gagal: {exc}")
+                    own_sock = None
+                if own_sock is not None:
+                    own_fr = G.FrameReader(own_sock)
+                    own_t0 = time.time()
+                    # Jendela login own room (tbugv/JoinedRoom, 3 dtk).
+                    _g, _c = own_fr.read_until(
+                        lambda f: G._is_tbugv(f) or G._is_joinedroom(f), 3)
+                    hasil["own_room_join"] = await join_room_once(
+                        own_sock, own_fr, own_rm, "room-sendiri",
+                        own_t0, hasil)
+                    for e in hasil["own_room_join"]["frames_0x06"]:
+                        print(f"    own 0x06 t+{e['t_rel']}: {e['tag']} "
+                              f"hex={e['hex']}")
+                    try:
+                        own_sock.close()
+                    except Exception:
+                        pass
     body = await allocate_to_user(session, user_jwt, dest_user_id)
     if not body:
         print("[!] alokasi destinationUserId gagal/kosong.")
@@ -183,22 +302,21 @@ async def join_full_once(session, email, password, device_id,
     for e in hasil["login_window_frames"]:
         print(f"    login t+{e['t_rel']}: {e['label']} {e['ring']} "
               f"hex={e['hex'][:64]}")
-    print(f"[*] kirim JoinRoom({rm}) ...")
-    try:
-        sock.sendall(L.build_join_frame(rm))
-    except Exception as exc:
-        print(f"[!] kirim JoinRoom gagal: {exc}")
-        return hasil
-    print("[*] FASE 2: join window — rekam semua frame (10 dtk)...")
-    _collect(fr, 10, hasil["join_window_frames"])
-    for e in hasil["join_window_frames"]:
-        print(f"    join t+{e['t_rel']}: {e['label']} {e['ring']} "
-              f"hex={e['hex'][:64]}")
-    if hasil["joined_room"] is not None:
-        print(f"[+] JoinedRoom TERKONFIRMASI room={hasil['joined_room']} "
+    print("[*] FASE 2: join room target — JoinRoom 3x + analisis 0x06 ...")
+    hasil["dest_room_join"] = await join_room_once(
+        sock, fr, rm, "room-target", t0, hasil)
+    hasil["join_window_frames"] = hasil["dest_room_join"]["frames"]
+    for e in hasil["dest_room_join"]["frames_0x06"]:
+        print(f"    dest 0x06 t+{e['t_rel']}: {e['tag']} hex={e['hex']}")
+    if hasil["dest_room_join"]["confirmed"]:
+        hasil["joined_room"] = rm
+        hasil["joined_room_frame_hex"] = \
+            hasil["dest_room_join"]["confirm_hex"]
+        print(f"[+] JoinedRoom TERKONFIRMASI room={rm} "
               f"hex={hasil['joined_room_frame_hex']}")
     else:
-        print("[!] TIDAK ada konfirmasi JoinedRoom di 10 dtk.")
+        print("[!] TIDAK ada konfirmasi JoinedRoom di room target "
+              f"(gema 0x06: {hasil['dest_room_join']['echo_count']}).")
     # Kirim spawn seperti bot Termux, lalu rekam lagi.
     try:
         data = build_spawn_aaa(SPAWN_X, SPAWN_Y, SPAWN_Z)
