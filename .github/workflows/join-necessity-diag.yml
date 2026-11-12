@@ -1,0 +1,56 @@
+name: DIAG Join Necessity — apakah JoinRoom diperlukan + parse batch 0x0d
+
+# Bot login ke server target TANPA kirim JoinRoom dulu (10 dtk) untuk
+# membuktikan apakah data room + JoinedRoom (via batch 0x0d) tetap
+# masuk — lalu kirim JoinRoom SEKALI dan rekam responsnya (060003?).
+# TIDAK gendong / tidak invite. Menjawab temuan diag v2 (run 43189639014):
+# konfirmasi JoinedRoom room 10 sudah ada di batch 0x0d saat login,
+# dan JoinRoom eksplisit dibalas 060003 (diduga sudah-di-room).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot"
+        required: true
+        default: "pkxdshop.id@gmail.com"
+      password:
+        description: "Password bot (ROTASI sesudah tes)"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = bawaan probe)"
+        required: false
+        default: ""
+      dest_user_id:
+        description: "UUID target (pemain yang di-join bot)"
+        required: false
+        default: "c6c271e0-a3d9-4a93-bf64-1c715d1b7fbb"
+      bot_user_id:
+        description: "UUID bot"
+        required: false
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      listen_no_join:
+        description: "Dengarkan berapa detik TANPA JoinRoom"
+        required: false
+        default: "10"
+      listen_after_join:
+        description: "Dengarkan berapa detik sesudah JoinRoom"
+        required: false
+        default: "5"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u join_necessity_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --bot-user-id "${{ inputs.bot_user_id }}" --listen-no-join "${{ inputs.listen_no_join }}" --listen-after-join "${{ inputs.listen_after_join }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PET_RESULT_SECRET: ${{ secrets.PET_RESULT_SECRET }}
