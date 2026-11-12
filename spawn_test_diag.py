@@ -261,9 +261,26 @@ async def spawn_test_once(session, email, password, device_id,
              "room_user_update": dict(hasil["room_user_update"])}
     watch = [dest_user_id, bot_user_id]
 
-    def _listen(seconds, label):
+    # Heartbeat posisi: kirim ulang frame "aaa" tiap 1,0 dtk selama
+    # mendengarkan. PERBAIKAN (hipotesis Bartes 2026-11-12): bot kirim
+    # posisi SEKALI saja lalu tetap di bawah tanah — client asli kirim
+    # posisi kontinu ~9,3x/detik; server mungkin butuh update kontinu
+    # agar posisi "menempel". Frame yang dikirim ulang = data spawn.
+    spawn_frame = build_spawn_aaa(sx, sy, sz)
+    hasil["heartbeat_s"] = 1.0
+    hasil["heartbeat_sent"] = 0
+
+    def _listen(seconds, label, heartbeat=None):
         end = time.time() + seconds
+        last_hb = time.time()
         while time.time() < end:
+            if heartbeat is not None and time.time() - last_hb >= 1.0:
+                try:
+                    sock.sendall(L.build_room_event_varint("tbulv", heartbeat))
+                    hasil["heartbeat_sent"] += 1
+                    last_hb = time.time()
+                except Exception:
+                    pass
             for f in fr.drain(0.5):
                 raw = bytes(f)
                 ftype = raw[0] if raw else None
@@ -306,14 +323,15 @@ async def spawn_test_once(session, email, password, device_id,
               f"deviceId='{send_dev}' (t+{hasil['deviceid_t_rel']} dtk).")
     except Exception as exc:
         print(f"[!] kirim SendDeviceId gagal: {exc}")
-    _listen(3, "deviceid")
+    _listen(3, "deviceid", heartbeat=spawn_frame)
     hasil["room_user_update"] = state["room_user_update"]
     hasil["new_events"] = state["new_events"]
     hasil["event_names"] = state["event_names"]
     hasil["frame_types"] = {str(k): v for k, v in state["frame_types"].items()}
     print(f"[*] Bot tetap online {listen_s} dtk supaya Bartes bisa cek "
-          f"apakah bot muncul di town square. Mendengarkan...")
-    _listen(listen_s, "spawn-check")
+          f"apakah bot muncul di town square. Mendengarkan + heartbeat "
+          f"posisi tiap 1 dtk...")
+    _listen(listen_s, "spawn-check", heartbeat=spawn_frame)
     hasil["room_user_update"] = state["room_user_update"]
     hasil["new_events"] = state["new_events"]
     hasil["event_names"] = state["event_names"]
