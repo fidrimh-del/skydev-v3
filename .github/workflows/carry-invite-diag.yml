@@ -1,0 +1,55 @@
+name: DIAG Carry Invite — bot undang gendong pemain
+
+# Bot join server Bartes lalu KIRIM invite gendong ke Bartes (bot sebagai
+# pengundang). Bila Bartes terima sebelum batas tunggu, ACC telat tidak
+# dikirim. Bila tolak/timeout sampai batas tunggu (~6 dtk), bot kirim ACC
+# telat (Auto ACC TCP) — pemain digendong bot tanpa persetujuan.
+# BATASAN: bot tidak bisa jalan, jadi hanya menahan pemain di tempat bot.
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot"
+        required: true
+        default: "pkxdshop.id@gmail.com"
+      password:
+        description: "Password bot (ROTASI sesudah tes)"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = bawaan probe)"
+        required: false
+        default: ""
+      dest_user_id:
+        description: "UUID target (pemain yang digendong bot)"
+        required: false
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      bot_user_id:
+        description: "UUID bot pengundang"
+        required: false
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      invite_wait:
+        description: "Tunggu berapa detik sebelum ACC telat"
+        required: false
+        default: "6"
+      listen:
+        description: "Dengarkan berapa detik total"
+        required: false
+        default: "60"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u carry_invite_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --bot-user-id "${{ inputs.bot_user_id }}" --invite-wait "${{ inputs.invite_wait }}" --listen "${{ inputs.listen }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PET_RESULT_SECRET: ${{ secrets.PET_RESULT_SECRET }}
