@@ -74,12 +74,13 @@ def build_position_payload(x, y, z, rotation=0.0, teleported=1, sequence=0):
             + struct.pack(">f", z) + struct.pack(">f", rotation))
 
 
-def build_tbulv_idle(x=0.0, y=0.0, z=0.0):
-    """Frame 'tbulv' (state idle) — sama seperti spawn_test_diag.py:
-    prefix 00 06 <ID bot 2 byte> + 'aaa' 5 sub-message. build_spawn_aaa
-    butuh x,y,z (koordinat bot saat ini)."""
+def build_tbulv_idle(x=0.0, y=0.0, z=0.0, player_id=None):
+    """Frame 'tbulv' (state idle) — sama seperti spawn_test_diag.py.
+    player_id WAJIB (prefix 00 06 <ID> TERBUKTI hilangkan animasi
+    buka-jam / bikin bot benar-benar idle, run 43221201166).
+    Tanpa prefix, bot tampil animasi buka ponsel (laporan Bartes)."""
     import spawn_test_diag as S
-    return S.build_spawn_aaa(x, y, z)
+    return S.build_spawn_aaa(x, y, z, player_id=player_id)
 
 
 def parse_c_batch(data):
@@ -147,10 +148,11 @@ async def follow_once(session, email, password, device_id,
     if not host or not port:
         print("[!] host/port tidak ketemu.")
         return hasil
-    sock, _pid = L.tcp_connect(host, port)
+    sock, pid = L.tcp_connect(host, port)
     if sock is None:
         print("[!] TCP connect gagal.")
         return hasil
+    print(f"[+] Connected: playerId={pid} (2-byte ID: 0x{pid & 0xFFFF:04x}).")
     try:
         sock.sendall(L.build_login_frame(user_jwt))
     except Exception as exc:
@@ -182,27 +184,36 @@ async def follow_once(session, email, password, device_id,
         joined_here = find_joinedroom_in_frames(extra, rm)
     hasil["joined_room"] = rm if joined_here else None
     print(f"[+] JoinedRoom({rm}) = {joined_here}. FOLLOW dimulai {duration_s} dtk — Bartes jalan pelan...")
-    # Posisi target awal = posisi Bartes yang diketahui.
+    # Posisi + rotasi target awal = posisi Bartes yang diketahui.
     tx, ty, tz = start_x, start_y, start_z
+    trot = 0.0
     seq = [0]
+    # Posisi bot terakhir yang DIKIRIM (untuk dead-zone).
+    last_sent = [None, None, None]
 
-    def send_bot_pos(x, y, z, teleported):
+    def send_bot_pos(x, y, z, teleported, rotation=0.0):
         seq[0] = (seq[0] + 1) & 0xFF
         try:
             sock.sendall(L.build_room_event_varint(
-                "C", build_position_payload(x, y, z, teleported=teleported,
+                "C", build_position_payload(x, y, z, rotation=rotation,
+                                            teleported=teleported,
                                             sequence=seq[0])))
             hasil["bot_sends"] += 1
+            last_sent[0], last_sent[1], last_sent[2] = x, y, z
         except Exception:
             pass
 
-    # tbulv sekali + posisi awal (berdiri di samping Bartes).
+    def bot_target_pos():
+        # Bot berdiri 1.5 unit di samping Bartes (arah +X dunia).
+        return (tx + 1.5, ty, tz)
+
+    # tbulv sekali (DENGAN player_id -> prefix 00 06 <ID>) + posisi awal.
     try:
         sock.sendall(L.build_room_event_varint(
-            "tbulv", build_tbulv_idle(tx + 1.5, ty, tz)))
+            "tbulv", build_tbulv_idle(tx + 1.5, ty, tz, player_id=pid)))
     except Exception as exc:
         print(f"[!] kirim tbulv gagal: {exc}")
-    send_bot_pos(tx + 1.5, ty, tz, teleported=1)
+    send_bot_pos(tx + 1.5, ty, tz, teleported=1, rotation=trot)
     print(f"[+] Bot di ({tx + 1.5:.2f},{ty:.2f},{tz:.2f}), target Bartes ({tx:.2f},{ty:.2f},{tz:.2f})")
     end = time.time() + duration_s
     last_hb = time.time()
@@ -210,19 +221,30 @@ async def follow_once(session, email, password, device_id,
     last_target_seen = time.time()
     while time.time() < end:
         now = time.time()
-        # Heartbeat posisi bot tiap 1 dtk (ke posisi target terakhir).
-        if now - last_hb >= 1.0:
-            send_bot_pos(tx + 1.5, ty, tz, teleported=0)
+        # Kirim posisi bot tiap 0.15 dtk (6-7 Hz) BILA target bergerak
+        # >0.3 unit dari posisi terakhir yang dikirim (dead-zone: bila
+        # Bartes diam, bot TIDAK kirim gerakan -> tidak jalan di tempat).
+        # Bila diam >5 dtk, kirim 1x snap (Teleported=1) sebagai
+        # keep-alive tanpa animasi jalan.
+        bx, by, bz = bot_target_pos()
+        moved = (last_sent[0] is None or
+                 math.sqrt((bx - last_sent[0]) ** 2 + (by - last_sent[1]) ** 2
+                           + (bz - last_sent[2]) ** 2) > 0.3)
+        if moved and now - last_hb >= 0.15:
+            send_bot_pos(bx, by, bz, teleported=0, rotation=trot)
             last_hb = now
-        # tbulv tiap 5 dtk agar bot tetap aktif/terlihat.
+        elif not moved and now - last_hb >= 5.0:
+            send_bot_pos(bx, by, bz, teleported=1, rotation=trot)
+            last_hb = now
+        # tbulv tiap 5 dtk agar bot tetap aktif/terlihat (dengan player_id).
         if now - last_tbulv >= 5.0:
             try:
                 sock.sendall(L.build_room_event_varint(
-                    "tbulv", build_tbulv_idle(tx + 1.5, ty, tz)))
+                    "tbulv", build_tbulv_idle(bx, by, bz, player_id=pid)))
             except Exception:
                 pass
             last_tbulv = now
-        for f in fr.drain(0.2):
+        for f in fr.drain(0.1):
             name, d = G.decode_room_event(f)
             if name == "C" and d:
                 hasil["c_received"] += 1
@@ -234,19 +256,17 @@ async def follow_once(session, email, password, device_id,
                     dist = math.sqrt((x - tx) ** 2 + (y - ty) ** 2 + (z - tz) ** 2)
                     if dist < best_dist:
                         best_dist = dist
-                        best = (x, y, z)
+                        best = (x, y, z, rot)
                 if best is not None:
-                    tx, ty, tz = best
+                    tx, ty, tz, trot = best
                     hasil["target_seen"] += 1
                     last_target_seen = now
                     if len(hasil["target_updates"]) < 40:
                         hasil["target_updates"].append({
                             "t": round(now - t0, 1),
                             "x": round(tx, 2), "y": round(ty, 2),
-                            "z": round(tz, 2),
+                            "z": round(tz, 2), "rot": round(trot, 2),
                         })
-                    # Langsung pindah bot ke samping target baru.
-                    send_bot_pos(tx + 1.5, ty, tz, teleported=0)
     try:
         sock.close()
     except Exception:
