@@ -190,6 +190,15 @@ async def follow_once(session, email, password, device_id,
     seq = [0]
     # Posisi bot terakhir yang DIKIRIM (untuk dead-zone).
     last_sent = [None, None, None]
+    # Pelacak target: kecepatan (untuk prediksi) + seq record 'C' Bartes.
+    # Bartes jalan ~1.5-3 unit/dtk; antar update 'C' (~14 Hz) ia bergerak
+    # <0.5 unit. Radius cocok 15 unit TERLALU BESAR — bot sempat lompat
+    # 14 unit ke pemain lain (log run 43234058318: 3 lompatan >5 unit).
+    # Kini radius 3 unit + prediksi posisi + seq (ID stabil per pemain).
+    vel = [0.0, 0.0, 0.0]
+    last_match_t = [None]
+    last_match_seq = [None]
+    last_match_pos = [None, None, None]
 
     def send_bot_pos(x, y, z, teleported, rotation=0.0):
         seq[0] = (seq[0] + 1) & 0xFF
@@ -221,17 +230,15 @@ async def follow_once(session, email, password, device_id,
     last_target_seen = time.time()
     while time.time() < end:
         now = time.time()
-        # Kirim posisi bot tiap 0.10 dtk (10 Hz) BILA target bergerak
-        # >0.05 unit dari posisi terakhir yang dikirim (dead-zone kecil:
-        # jalan pelan ~1 unit/dtk = 0.1 unit per 0.1 dtk, jadi lolos;
-        # getar posisi saat diam <0.05, jadi bot tetap diam).
+        # Kirim posisi bot tiap 0.05 dtk (20 Hz) BILA target bergerak
+        # >0.05 unit dari posisi terakhir yang dikirim (dead-zone kecil).
         # Bila diam >5 dtk, kirim 1x snap (Teleported=1) sebagai
         # keep-alive tanpa animasi jalan.
         bx, by, bz = bot_target_pos()
         moved = (last_sent[0] is None or
                  math.sqrt((bx - last_sent[0]) ** 2 + (by - last_sent[1]) ** 2
                            + (bz - last_sent[2]) ** 2) > 0.05)
-        if moved and now - last_hb >= 0.10:
+        if moved and now - last_hb >= 0.05:
             send_bot_pos(bx, by, bz, teleported=0, rotation=trot)
             last_hb = now
         elif not moved and now - last_hb >= 5.0:
@@ -250,16 +257,51 @@ async def follow_once(session, email, password, device_id,
             if name == "C" and d:
                 hasil["c_received"] += 1
                 positions = parse_c_batch(d)
-                # Cari posisi terdekat dengan target terakhir (radius 15).
+                # Prediksi posisi Bartes berikutnya dari kecepatan terakhir.
+                if last_match_t[0] is not None:
+                    dt_pred = now - last_match_t[0]
+                    px = tx + vel[0] * dt_pred
+                    py = ty + vel[1] * dt_pred
+                    pz = tz + vel[2] * dt_pred
+                else:
+                    px, py, pz = tx, ty, tz
+                # Cari posisi terdekat dengan PREDIKSI (radius 3 unit).
+                # Bonus: bila seq = seq terakhir + 1, itu aliran yang sama.
                 best = None
-                best_dist = 15.0
+                best_score = None
                 for (x, y, z, rot, tele, s) in positions:
-                    dist = math.sqrt((x - tx) ** 2 + (y - ty) ** 2 + (z - tz) ** 2)
-                    if dist < best_dist:
-                        best_dist = dist
-                        best = (x, y, z, rot)
+                    dist = math.sqrt((x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2)
+                    if dist > 3.0:
+                        continue
+                    score = dist
+                    if last_match_seq[0] is not None:
+                        expected = (last_match_seq[0] + 1) & 0xFF
+                        if s == expected:
+                            score -= 1.0  # bonus aliran sama
+                        elif s == last_match_seq[0]:
+                            score += 0.5  # record lama (duplikat)
+                    if best_score is None or score < best_score:
+                        best_score = score
+                        best = (x, y, z, rot, s)
                 if best is not None:
-                    tx, ty, tz, trot = best
+                    nx, ny, nz, nrot, nseq = best
+                    # Update kecepatan (per detik) dari perpindahan terakhir.
+                    if last_match_t[0] is not None and last_match_pos[0] is not None:
+                        dtm = now - last_match_t[0]
+                        if dtm > 0.01:
+                            vel[0] = (nx - last_match_pos[0]) / dtm
+                            vel[1] = (ny - last_match_pos[1]) / dtm
+                            vel[2] = (nz - last_match_pos[2]) / dtm
+                            # Batasi kecepatan wajar (jalan/lari < 10 unit/dtk).
+                            sp = math.sqrt(vel[0] ** 2 + vel[1] ** 2 + vel[2] ** 2)
+                            if sp > 10.0:
+                                vel[0] *= 10.0 / sp
+                                vel[1] *= 10.0 / sp
+                                vel[2] *= 10.0 / sp
+                    tx, ty, tz, trot = nx, ny, nz, nrot
+                    last_match_seq[0] = nseq
+                    last_match_t[0] = now
+                    last_match_pos[0], last_match_pos[1], last_match_pos[2] = nx, ny, nz
                     hasil["target_seen"] += 1
                     last_target_seen = now
                     if len(hasil["target_updates"]) < 40:
@@ -267,6 +309,7 @@ async def follow_once(session, email, password, device_id,
                             "t": round(now - t0, 1),
                             "x": round(tx, 2), "y": round(ty, 2),
                             "z": round(tz, 2), "rot": round(trot, 2),
+                            "seq": nseq,
                         })
     try:
         sock.close()
