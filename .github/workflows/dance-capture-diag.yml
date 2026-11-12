@@ -1,0 +1,57 @@
+name: DIAG Dance Capture — tangkap event dance Bartes
+
+# Tangkap SEMUA RoomEvent saat Bartes dance (2026-11-12):
+# dance = "Reaction" (ReactionIndex + AnimationItem); bukan user-variable,
+# kemungkinan RoomEvent terpisah — nama + payload belum diketahui.
+# Bartes dance satu gerakan selama jendela dengar; bot berdiri di
+# sampingnya (paling dekat) sehingga event dance-nya yang dicari.
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      dest_user_id:
+        description: "UUID target (SkyDev)"
+        required: false
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      bot_user_id:
+        description: "UUID bot pkxdshop"
+        required: false
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      listen:
+        description: "Detik mendengarkan (Bartes dance selama ini)"
+        required: false
+        default: "30"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run dance capture
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DANCE_EMAIL: ${{ inputs.email }}
+          DANCE_PASSWORD: ${{ inputs.password }}
+          DANCE_DEVICE_ID: ${{ inputs.device_id }}
+          DANCE_DEST_USER_ID: ${{ inputs.dest_user_id }}
+          DANCE_BOT_USER_ID: ${{ inputs.bot_user_id }}
+        run: |
+          python -u dance_capture_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --bot-user-id "${{ inputs.bot_user_id }}" --listen "${{ inputs.listen }}"
