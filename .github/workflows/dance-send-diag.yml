@@ -1,0 +1,77 @@
+name: DIAG Dance Send — bot dance langsung (field 7 = 43)
+
+# Isolasi jalur kirim dance: bot kirim LANGSUNG 'aaa' + field 7 =
+# ReactionIndex 43 (nomor dance Bartes, TERKONFIRMASI run 43331214520),
+# tanpa relay. Bila Bartes lihat bot dance -> jalur kirim BERFUNGSI,
+# masalah ada di logika mirror/identifikasi pid (mirror run 43331770803
+# relay 45x tapi salah pid: 75d2 pemain asing, Bartes 72a9 cuma 1 frame).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      dest_user_id:
+        description: "UUID target (SkyDev)"
+        required: false
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      bot_user_id:
+        description: "UUID bot pkxdshop"
+        required: false
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      reaction_index:
+        description: "Nomor dance (43 = dance Bartes tadi)"
+        required: false
+        default: "43"
+      dance_s:
+        description: "Detik bot dance"
+        required: false
+        default: "30"
+      idle_s:
+        description: "Detik bot diam sesudahnya"
+        required: false
+        default: "10"
+      start_x:
+        description: "X awal Bartes"
+        required: false
+        default: "-79.99"
+      start_y:
+        description: "Y awal Bartes"
+        required: false
+        default: "21.96"
+      start_z:
+        description: "Z awal Bartes"
+        required: false
+        default: "-76.42"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run dance send
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DANCE_EMAIL: ${{ inputs.email }}
+          DANCE_PASSWORD: ${{ inputs.password }}
+          DANCE_DEVICE_ID: ${{ inputs.device_id }}
+          DANCE_DEST_USER_ID: ${{ inputs.dest_user_id }}
+          DANCE_BOT_USER_ID: ${{ inputs.bot_user_id }}
+        run: |
+          python -u dance_send_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --bot-user-id "${{ inputs.bot_user_id }}" --reaction-index "${{ inputs.reaction_index }}" --dance-s "${{ inputs.dance_s }}" --idle-s "${{ inputs.idle_s }}" --start-x "${{ inputs.start_x }}" --start-y "${{ inputs.start_y }}" --start-z "${{ inputs.start_z }}"
