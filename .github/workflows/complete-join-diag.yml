@@ -1,13 +1,15 @@
 name: DIAG Complete Join — bot kirim deviceid + user variable + gendong
 
 # Eksperimen Sekolah (2026-11-12, Bartes): bot kirim SET LENGKAP sesudah
-# join — SendDeviceId (RoomEvent 'deviceid', deviceId UTF-8) + satu user
-# variable (RoomEvent 'uv', bool "sr"=true) — lalu invite gendong
+# join — SendDeviceId (RoomEvent 'Analytics/deviceId', deviceId UTF-8) + satu user
+# variable (RoomEvent 'tbulv', bool "sr"=true) — lalu invite gendong
 # + ACC telat. Tujuannya: apakah server activity mulai menyiarkan bot
 # (RoomUserUpdate) sesudah pesan-pesan ini, dan apakah Bartes melihat
 # wujud bot / tergendong di Sekolah. Disassembly dump BARU membuktikan
-# GetExistingPlayers TIDAK kirim apa pun ke server (lokal saja); deviceid
-# + 'uv' adalah dua hal yang client asli kirim dan bot tidak pernah kirim.
+# GetExistingPlayers TIDAK kirim apa pun ke server (lokal saja).
+# Nama event TERBUKTI (audit relokasi 2026-11-12): 'Analytics/deviceId'
+# + 'tbulv' (bukan 'deviceid'/'uv' yang salah). JoinRoom eksplisit TIDAK
+# dikirim — server auto-place dari alokasi lobby.
 # Deteksi RoomUserUpdate = heuristik (frame berisi UUID target/bot, atau
 # event name baru). Verdict utama = cek in-game Bartes.
 on:
@@ -33,13 +35,13 @@ on:
         required: false
         default: "71056756-53c7-478e-9356-82c87fb2dd63"
       device_event:
-        description: "Nama event SendDeviceId"
+        description: "Nama event SendDeviceId (TERBUKTI: 'Analytics/deviceId')"
         required: false
-        default: "deviceid"
+        default: "Analytics/deviceId"
       uv_event:
-        description: "Nama event user variable"
+        description: "Nama event user variable (TERBUKTI: 'tbulv')"
         required: false
-        default: "uv"
+        default: "tbulv"
       uv_name:
         description: "Nama variabel user"
         required: false
