@@ -1,0 +1,81 @@
+name: DIAG Spawn Test — bot spawn town square Plaza (koordinat tetap Bartes)
+
+# Tes spawn town square (2026-11-12, Bartes): bot pkxdshop join server
+# SkyDev di Plaza, kirim posisi spawn TETAP dari koordinat Bartes
+# (CoordLog di tempat spawn: X=-21.47, Y=22.19, Z=-72.63) + rumus
+# client asli (cincin radius 6,0-7,5, Y = pusat.Y + 2,0 = 24,19),
+# lalu tetap online 90 dtk supaya Bartes cek apakah bot muncul di
+# town square. Bila tidak muncul / tetap di bawah tanah, berarti ada
+# yang salah pada PENGIRIMAN koordinat (frame "aaa" via 'tbulv').
+# TIDAK kirim JoinRoom eksplisit (server auto-place, JoinedRoom dari
+# batch 0x0d). SendDeviceId via 'Analytics/deviceId' (TERBUKTI).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      dest_user_id:
+        description: "UUID target (SkyDev)"
+        required: false
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      bot_user_id:
+        description: "UUID bot pkxdshop"
+        required: false
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      spawn_x:
+        description: "Spawn X (kosong = acak dalam cincin town square)"
+        required: false
+        default: ""
+      spawn_y:
+        description: "Spawn Y (kosong = pusat.Y + 2.0 = 24.19)"
+        required: false
+        default: ""
+      spawn_z:
+        description: "Spawn Z (kosong = acak dalam cincin town square)"
+        required: false
+        default: ""
+      device_event:
+        description: "Nama event SendDeviceId (TERBUKTI: 'Analytics/deviceId')"
+        required: false
+        default: "Analytics/deviceId"
+      listen:
+        description: "Detik bot tetap online sesudah spawn"
+        required: false
+        default: "90"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run spawn test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SPAWN_EMAIL: ${{ inputs.email }}
+          SPAWN_PASSWORD: ${{ inputs.password }}
+          SPAWN_DEVICE_ID: ${{ inputs.device_id }}
+          SPAWN_DEST_USER_ID: ${{ inputs.dest_user_id }}
+          SPAWN_BOT_USER_ID: ${{ inputs.bot_user_id }}
+        run: |
+          ARGS=(--email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --bot-user-id "${{ inputs.bot_user_id }}" --device-event "${{ inputs.device_event }}" --listen "${{ inputs.listen }}")
+          if [ -n "${{ inputs.spawn_x }}" ]; then ARGS+=(--spawn-x "${{ inputs.spawn_x }}"); fi
+          if [ -n "${{ inputs.spawn_y }}" ]; then ARGS+=(--spawn-y "${{ inputs.spawn_y }}"); fi
+          if [ -n "${{ inputs.spawn_z }}" ]; then ARGS+=(--spawn-z "${{ inputs.spawn_z }}"); fi
+          python -u spawn_test_diag.py "${ARGS[@]}"
