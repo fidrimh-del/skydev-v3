@@ -1,0 +1,45 @@
+name: DIAG Friend Invite by Name — bot add teman (berdasarkan Nama#Kode)
+
+# Varian friend-invite-diag yang menerima Nama#Kode target (bukan UUID).
+# Dipakai untuk tes Bartes 2026-11-12: bot pkxdshop add friend
+# kontol#618144 (akun baru) — langkah pertama sebelum tes carry.
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot"
+        required: true
+        default: "pkxdshop.id@gmail.com"
+      password:
+        description: "Password bot (ROTASI sesudah tes)"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = bawaan probe)"
+        required: false
+        default: ""
+      dest_name:
+        description: "Nama#Kode target"
+        required: true
+        default: "kontol#618144"
+      listen:
+        description: "Dengarkan berapa detik total"
+        required: false
+        default: "30"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u friend_invite_by_name_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-name "${{ inputs.dest_name }}" --listen "${{ inputs.listen }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PET_RESULT_SECRET: ${{ secrets.PET_RESULT_SECRET }}
