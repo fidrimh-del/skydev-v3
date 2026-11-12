@@ -264,7 +264,8 @@ async def carry_invite_once(session, email, password, device_id,
              "late_acc_sent": False, "late_acc_t_rel": None,
              "accepted_observed": False,
              "consent_events": [],
-             "event_names": {}}
+             "event_names": {},
+             "rs_count": 0, "rs_samples": []}
     user_jwt, alloc = await L.login_and_allocate(email, password, device_id,
                                                  session)
     if not alloc:
@@ -360,6 +361,14 @@ async def carry_invite_once(session, email, password, device_id,
                 continue
             hasil["event_names"][name] = \
                 hasil["event_names"].get(name, 0) + 1
+            if name == "RS":
+                hasil["rs_count"] += 1
+                if len(hasil["rs_samples"]) < 5:
+                    raw = bytes(d) if isinstance(d, (bytes, bytearray)) else b""
+                    hasil["rs_samples"].append({
+                        "t_rel": round(time.time() - t0, 1),
+                        "len": len(raw),
+                        "hex": raw[:200].hex()})
             if name != "consent":
                 continue
             entry = {"t_rel": round(time.time() - t0, 1),
@@ -405,7 +414,8 @@ async def carry_invite_once(session, email, password, device_id,
     print(f"[+] selesai. invite: {hasil['invite_sent']}, "
           f"accept teramati: {hasil['accepted_observed']}, "
           f"ACC telat: {hasil['late_acc_sent']}, "
-          f"consent events: {len(hasil['consent_events'])}")
+          f"consent events: {len(hasil['consent_events'])}, "
+          f"RS: {hasil['rs_count']}")
     return hasil
 
 
