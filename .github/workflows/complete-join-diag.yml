@@ -2,7 +2,7 @@ name: DIAG Complete Join — bot kirim deviceid + user variable + gendong
 
 # Eksperimen Sekolah (2026-11-12, Bartes): bot kirim SET LENGKAP sesudah
 # join — SendDeviceId (RoomEvent 'deviceid', deviceId UTF-8) + satu user
-# variable (RoomEvent 'uv', bool "subscriber"=true) — lalu invite gendong
+# variable (RoomEvent 'uv', bool "sr"=true) — lalu invite gendong
 # + ACC telat. Tujuannya: apakah server activity mulai menyiarkan bot
 # (RoomUserUpdate) sesudah pesan-pesan ini, dan apakah Bartes melihat
 # wujud bot / tergendong di Sekolah. Disassembly dump BARU membuktikan
@@ -43,7 +43,7 @@ on:
       uv_name:
         description: "Nama variabel user"
         required: false
-        default: "subscriber"
+        default: "sr"
       invite_wait:
         description: "Tunggu berapa detik sebelum ACC telat"
         required: false
