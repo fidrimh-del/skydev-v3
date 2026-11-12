@@ -1,0 +1,50 @@
+name: Register Named Bot (BINARY/KOREA — TEST SINGLE)
+
+# Buat 1 bot bernama unik/seram (angka binari + Hangul Korea), tanpa outfit
+# (script sudah tidak kirim outfit — mode kontrol nickname saja).
+# Nama dari custom_names_binary.txt (dipakai berurutan bila server tolak).
+# Server biasanya hanya menolak bila nama semuanya nomor — nama di sini
+# selalu campur Hangul + binari, jadi bukan semuanya nomor.
+on:
+  workflow_dispatch:
+    inputs:
+      jumlah:
+        description: 'Jumlah bot yang dibuat (single runner, tanpa matrix)'
+        required: false
+        default: '1'
+      workers:
+        description: 'Paralel workers'
+        required: false
+        default: '1'
+      name_mode:
+        description: 'Sumber nama: list (custom_names_binary.txt) atau suggestion (server)'
+        required: false
+        default: 'list'
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install curl_cffi
+
+      - name: Register + Nickname
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          JUMLAH: ${{ inputs.jumlah }}
+          WORKERS: ${{ inputs.workers }}
+          NAME_MODE: ${{ inputs.name_mode }}
+          CUSTOM_NAMES_FILE: custom_names_binary.txt
+          RUNNER_INDEX: '1'
+          RUNNER_TOTAL: '1'
+        run: python register_named.py
