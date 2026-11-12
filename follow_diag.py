@@ -74,11 +74,12 @@ def build_position_payload(x, y, z, rotation=0.0, teleported=1, sequence=0):
             + struct.pack(">f", z) + struct.pack(">f", rotation))
 
 
-def build_tbulv_idle():
-    """Frame 'tbulv' sekali (state idle) — sama seperti spawn_test_diag.py:
-    prefix 00 06 <ID bot 2 byte> + 'aaa' 5 sub-message (f3 saja)."""
+def build_tbulv_idle(x=0.0, y=0.0, z=0.0):
+    """Frame 'tbulv' (state idle) — sama seperti spawn_test_diag.py:
+    prefix 00 06 <ID bot 2 byte> + 'aaa' 5 sub-message. build_spawn_aaa
+    butuh x,y,z (koordinat bot saat ini)."""
     import spawn_test_diag as S
-    return S.build_spawn_aaa()
+    return S.build_spawn_aaa(x, y, z)
 
 
 def parse_c_batch(data):
@@ -197,7 +198,8 @@ async def follow_once(session, email, password, device_id,
 
     # tbulv sekali + posisi awal (berdiri di samping Bartes).
     try:
-        sock.sendall(L.build_room_event_varint("tbulv", build_tbulv_idle()))
+        sock.sendall(L.build_room_event_varint(
+            "tbulv", build_tbulv_idle(tx + 1.5, ty, tz)))
     except Exception as exc:
         print(f"[!] kirim tbulv gagal: {exc}")
     send_bot_pos(tx + 1.5, ty, tz, teleported=1)
@@ -215,7 +217,8 @@ async def follow_once(session, email, password, device_id,
         # tbulv tiap 5 dtk agar bot tetap aktif/terlihat.
         if now - last_tbulv >= 5.0:
             try:
-                sock.sendall(L.build_room_event_varint("tbulv", build_tbulv_idle()))
+                sock.sendall(L.build_room_event_varint(
+                    "tbulv", build_tbulv_idle(tx + 1.5, ty, tz)))
             except Exception:
                 pass
             last_tbulv = now
