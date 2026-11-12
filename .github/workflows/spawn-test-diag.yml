@@ -50,6 +50,10 @@ on:
         description: "Detik bot tetap online sesudah spawn"
         required: false
         default: "90"
+      simple:
+        description: "Sub-message Y/X/Z hanya f3 (tanpa f1/f2) — uji apakah server hanya membaca f3"
+        required: false
+        default: "false"
 
 jobs:
   diag:
@@ -78,4 +82,5 @@ jobs:
           if [ -n "${{ inputs.spawn_x }}" ]; then ARGS+=(--spawn-x "${{ inputs.spawn_x }}"); fi
           if [ -n "${{ inputs.spawn_y }}" ]; then ARGS+=(--spawn-y "${{ inputs.spawn_y }}"); fi
           if [ -n "${{ inputs.spawn_z }}" ]; then ARGS+=(--spawn-z "${{ inputs.spawn_z }}"); fi
+          if [ "${{ inputs.simple }}" = "true" ]; then ARGS+=(--simple); fi
           python -u spawn_test_diag.py "${ARGS[@]}"
