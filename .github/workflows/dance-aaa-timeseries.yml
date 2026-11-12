@@ -1,0 +1,55 @@
+name: DIAG Dance AAA Timeseries — rekam nilai 'aaa' saat Bartes dance
+
+# Rekam deret waktu sub-message 'aaa' (tbulv) 60 dtk untuk menemukan
+# sinyal dance: dua tangkapan dance sebelumnya tidak menemukan RoomEvent
+# dance terpisah; sinyal kemungkinan di f1/f2/f3 'aaa'.
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      dest_user_id:
+        description: "UUID target (SkyDev)"
+        required: false
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      bot_user_id:
+        description: "UUID bot pkxdshop"
+        required: false
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      listen:
+        description: "Detik merekam (Bartes dance selama ini)"
+        required: false
+        default: "60"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run AAA timeseries
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          AAA_EMAIL: ${{ inputs.email }}
+          AAA_PASSWORD: ${{ inputs.password }}
+          AAA_DEVICE_ID: ${{ inputs.device_id }}
+          AAA_DEST_USER_ID: ${{ inputs.dest_user_id }}
+          AAA_BOT_USER_ID: ${{ inputs.bot_user_id }}
+        run: |
+          python -u dance_aaa_timeseries.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --bot-user-id "${{ inputs.bot_user_id }}" --listen "${{ inputs.listen }}"
