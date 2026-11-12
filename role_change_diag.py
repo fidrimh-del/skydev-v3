@@ -217,6 +217,24 @@ def build_role_var(role_value):
     return build_uservar("D", 4, bytes([role_value & 0xFF]))
 
 
+def find_joinedroom_in_frames(frames, rm):
+    """Cari konfirmasi JoinedRoom untuk room `rm` di daftar frame.
+    Mencakup: (a) frame standalone 0x06 [0x06][0x01][room 4 byte], dan
+    (b) sub-pesan JoinedRoom yang tertanam di frame batch 0x0d
+    (needle 06 01 + room). Kembalikan True bila ketemu.
+    PERBAIKAN (audit Bartes 2026-11-12): client asli TIDAK kirim
+    JoinRoom eksplisit — server menempatkan bot di room saat TCP login
+    (dari alokasi lobby destinationUserId); JoinedRoom tiba di batch
+    0x0d pada jendela login. JoinRoom eksplisit ditolak 060003."""
+    needle = bytes([0x06, 0x01]) + rm.to_bytes(4, "big")
+    for fr in frames:
+        if len(fr) >= 6 and fr[0] == 0x06 and fr[1] == 1 and int.from_bytes(fr[2:6], "big") == rm:
+            return True
+        if fr and fr[0] == 0x0d and needle in bytes(fr):
+            return True
+    return False
+
+
 def build_roletier_var(tier_value):
     """Role tier "rt" sebagai ByteVariable (tag 4)."""
     return build_uservar("rt", 4, bytes([tier_value & 0xFF]))
@@ -225,7 +243,7 @@ def build_roletier_var(tier_value):
 async def role_change_once(session, email, password, device_id,
                            dest_user_id, bot_user_id,
                            role_value, tier_value,
-                           device_event="deviceid", uv_event="uv",
+                           device_event="Analytics/deviceId", uv_event="tbulv",
                            listen_s=90):
     hasil = {"email": email, "dest_user_id": dest_user_id,
              "bot_user_id": bot_user_id,
@@ -275,34 +293,41 @@ async def role_change_once(session, email, password, device_id,
         return hasil
     fr = G.FrameReader(sock)
     print("[*] tunggu jendela login (tbugv/JoinedRoom, maks 3 dtk)...")
-    got, closed = fr.read_until(
-        lambda f: G._is_tbugv(f) or G._is_joinedroom(f), 3)
+    needle = bytes([0x06, 0x01]) + rm.to_bytes(4, "big")
+
+    def _is_join_or_tbugv(f):
+        if G._is_tbugv(f):
+            return True
+        if len(f) >= 6 and f[0] == 0x06 and f[1] == 1 and int.from_bytes(f[2:6], "big") == rm:
+            return True
+        if f and f[0] == 0x0d and needle in bytes(f):
+            return True
+        return False
+
+    got, closed = fr.read_until(_is_join_or_tbugv, 3)
     if closed:
         print("[!] koneksi tertutup saat tunggu login.")
         return hasil
     if got is not None and G._is_tbugv(got):
         time.sleep(1)
-    print(f"[*] kirim JoinRoom({rm}) ...")
-    try:
-        sock.sendall(L.build_join_frame(rm))
-    except Exception as exc:
-        print(f"[!] kirim JoinRoom gagal: {exc}")
-        return hasil
-
-    def _is_target_room(f):
-        return (len(f) >= 6 and f[0] == 0x06 and f[1] == 1
-                and int.from_bytes(f[2:6], "big") == rm)
-
-    joined, closed = fr.read_until(_is_target_room, 4)
-    if closed:
-        print("[!] koneksi tertutup saat JoinRoom.")
-        return hasil
+    # TIDAK kirim JoinRoom eksplisit (PERBAIKAN audit 2026-11-12):
+    # client asli tidak kirim JoinRoom; server auto-place dari alokasi
+    # lobby dan JoinedRoom tiba di batch 0x0d pada jendela login.
+    # JoinRoom eksplisit ditolak 060003. Cek JoinedRoom dari frame yang
+    # sudah didapat + drain singkat sesudahnya.
     t0 = time.time()
-    if joined is not None:
+    joined_here = False
+    if got is not None and not G._is_tbugv(got):
+        joined_here = True
+    if not joined_here:
+        extra = fr.drain(2)
+        joined_here = find_joinedroom_in_frames(extra, rm)
+    if joined_here:
         hasil["joined_room"] = rm
-        print(f"[+] JoinedRoom({rm}) TERKONFIRMASI.")
+        print(f"[+] JoinedRoom({rm}) TERKONFIRMASI (batch 0x0d / standalone).")
     else:
-        print("[!] TIDAK ada konfirmasi JoinedRoom — tetap lanjut.")
+        print("[!] JoinedRoom tidak ketemu di jendela login — tetap lanjut "
+              "(server auto-place; tbulv akan membuktikan).")
     # SMART SPAWN (main world: posisi paling sering).
     sx, sy, sz, smode = smart_spawn(fr, srv, seconds=5)
     hasil["spawn_pos"] = [round(sx, 2), round(sy, 2), round(sz, 2)]
@@ -427,8 +452,8 @@ async def main():
                     default=os.getenv("ROLE_BOT_USER_ID", BOT_UUID))
     ap.add_argument("--role", type=int, default=ROLE_CREATOR_UGC)
     ap.add_argument("--tier", type=int, default=TIER_LEGENDARY)
-    ap.add_argument("--device-event", default="deviceid")
-    ap.add_argument("--uv-event", default="uv")
+    ap.add_argument("--device-event", default="Analytics/deviceId")
+    ap.add_argument("--uv-event", default="tbulv")
     ap.add_argument("--listen", type=float, default=90)
     args = ap.parse_args()
     if not args.email or not args.password:
