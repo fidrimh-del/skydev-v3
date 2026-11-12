@@ -221,16 +221,17 @@ async def follow_once(session, email, password, device_id,
     last_target_seen = time.time()
     while time.time() < end:
         now = time.time()
-        # Kirim posisi bot tiap 0.15 dtk (6-7 Hz) BILA target bergerak
-        # >0.3 unit dari posisi terakhir yang dikirim (dead-zone: bila
-        # Bartes diam, bot TIDAK kirim gerakan -> tidak jalan di tempat).
+        # Kirim posisi bot tiap 0.10 dtk (10 Hz) BILA target bergerak
+        # >0.05 unit dari posisi terakhir yang dikirim (dead-zone kecil:
+        # jalan pelan ~1 unit/dtk = 0.1 unit per 0.1 dtk, jadi lolos;
+        # getar posisi saat diam <0.05, jadi bot tetap diam).
         # Bila diam >5 dtk, kirim 1x snap (Teleported=1) sebagai
         # keep-alive tanpa animasi jalan.
         bx, by, bz = bot_target_pos()
         moved = (last_sent[0] is None or
                  math.sqrt((bx - last_sent[0]) ** 2 + (by - last_sent[1]) ** 2
-                           + (bz - last_sent[2]) ** 2) > 0.3)
-        if moved and now - last_hb >= 0.15:
+                           + (bz - last_sent[2]) ** 2) > 0.05)
+        if moved and now - last_hb >= 0.10:
             send_bot_pos(bx, by, bz, teleported=0, rotation=trot)
             last_hb = now
         elif not moved and now - last_hb >= 5.0:
@@ -244,7 +245,7 @@ async def follow_once(session, email, password, device_id,
             except Exception:
                 pass
             last_tbulv = now
-        for f in fr.drain(0.1):
+        for f in fr.drain(0.05):
             name, d = G.decode_room_event(f)
             if name == "C" and d:
                 hasil["c_received"] += 1
