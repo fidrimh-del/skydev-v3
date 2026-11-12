@@ -124,19 +124,30 @@ def parse_protobuf(buf):
     return out
 
 
-def build_spawn_aaa(x, y, z, player_id=None):
+def build_spawn_aaa(x, y, z, player_id=None, simple=False):
     """Frame posisi 'aaa' (tbulv). Perbaikan 2026-11-12 (Bartes): frame
     'tbulv' ASLI dari pemain lain punya prefix `00 06 <ID-2byte>` sebelum
     `[BE32(3)]'aaa' 05` — prefix itu TIDAK ADA di frame bot sebelumnya.
     Bila player_id diberikan, sertakan prefix `00 06 <ID>` (ID = 2 byte
-    big-endian dari playerId koneksi). f1 Y/X masih hardcode dari pemain
-    lain (satu variabel per tes: prefix dulu, f1 belakangan)."""
+    big-endian dari playerId koneksi). Prefix SUDAH TERBUKTI memperbaiki
+    state bot (animasi jam hilang, bot benar-benar idle, run 43221201166)
+    tapi posisi TETAP tidak diterapkan. Tersangka berikut: f1 Y/X yang
+    hardcode dari pemain lain (server mungkin validasi f1 terhadap
+    pengirim). Bila simple=True, sub-message Y/X/Z hanya berisi f3
+    (koordinat float) tanpa f1/f2 — menguji apakah server hanya membaca
+    f3 dan mengabaikan f1. f3/f5 tetap -1/-1 (konstan, cocok dengan frame
+    asli)."""
     f32 = lambda v: struct.pack("<f", v)
-    sub_y = bytes.fromhex("08f980a5ab05") + b"\x1d" + f32(y)
-    sub_x = bytes.fromhex("089b87987010b3f2de61") + b"\x1d" + f32(x)
+    if simple:
+        sub_y = b"\x1d" + f32(y)
+        sub_x = b"\x1d" + f32(x)
+        sub_z = b"\x1d" + f32(z)
+    else:
+        sub_y = bytes.fromhex("08f980a5ab05") + b"\x1d" + f32(y)
+        sub_x = bytes.fromhex("089b87987010b3f2de61") + b"\x1d" + f32(x)
+        sub_z = bytes.fromhex("08a2b0b7b0fdffffffff01") + b"\x1d" + f32(z)
     sub_r = bytes.fromhex(
         "08ffffffffffffffffff0110ffffffffffffffffff01")
-    sub_z = bytes.fromhex("08a2b0b7b0fdffffffff01") + b"\x1d" + f32(z)
     sub_v = bytes.fromhex(
         "08ffffffffffffffffff0110ffffffffffffffffff01")
     pb = b""
@@ -176,7 +187,7 @@ async def spawn_test_once(session, email, password, device_id,
                           dest_user_id, bot_user_id,
                           spawn_x=None, spawn_y=None, spawn_z=None,
                           device_event="Analytics/deviceId",
-                          listen_s=90):
+                          listen_s=90, simple=False):
     hasil = {"email": email, "dest_user_id": dest_user_id,
              "bot_user_id": bot_user_id,
              "server": "", "room": None, "joined_room": None,
@@ -261,7 +272,7 @@ async def spawn_test_once(session, email, password, device_id,
     hasil["spawn_pos"] = [round(sx, 2), round(sy, 2), round(sz, 2)]
     hasil["spawn_mode"] = smode
     try:
-        data = build_spawn_aaa(sx, sy, sz, player_id=pid)
+        data = build_spawn_aaa(sx, sy, sz, player_id=pid, simple=simple)
         sock.sendall(L.build_room_event_varint("tbulv", data))
         print(f"[+] Posisi spawn terkirim ({sx:.2f},{sy:.2f},{sz:.2f}) [{smode}] "
               f"dengan prefix 00 06 {pid & 0xFFFF:04x}.")
@@ -278,7 +289,7 @@ async def spawn_test_once(session, email, password, device_id,
     # posisi SEKALI saja lalu tetap di bawah tanah — client asli kirim
     # posisi kontinu ~9,3x/detik; server mungkin butuh update kontinu
     # agar posisi "menempel". Frame yang dikirim ulang = data spawn.
-    spawn_frame = build_spawn_aaa(sx, sy, sz, player_id=pid)
+    spawn_frame = build_spawn_aaa(sx, sy, sz, player_id=pid, simple=simple)
     hasil["heartbeat_s"] = 1.0
     hasil["heartbeat_sent"] = 0
 
@@ -377,6 +388,9 @@ async def main():
     ap.add_argument("--spawn-z", type=float, default=None)
     ap.add_argument("--device-event", default="Analytics/deviceId")
     ap.add_argument("--listen", type=float, default=90)
+    ap.add_argument("--simple", action="store_true",
+                    help="Sub-message Y/X/Z hanya f3 (tanpa f1/f2) — "
+                    "uji apakah server hanya membaca f3")
     args = ap.parse_args()
     if not args.email or not args.password:
         print("[!] email/password bot wajib diisi.")
@@ -387,7 +401,7 @@ async def main():
             session, args.email, args.password, args.device_id,
             args.dest_user_id, args.bot_user_id,
             args.spawn_x, args.spawn_y, args.spawn_z,
-            args.device_event, args.listen)
+            args.device_event, args.listen, args.simple)
     print("SPAWN_TEST_JSON:" + json.dumps(hasil, separators=(",", ":")))
 
 
