@@ -1,36 +1,46 @@
-name: DIAG Follow Posisi (1 bot)
+name: DIAG Follow — bot ikuti Bartes via event 'C'
 
-# Diag sekali jalan (bukan produksi): 1 bot login -> alokasi
-# destinationUserId (server teman SkyDev) -> JoinRoom -> tangkap SEMUA
-# frame mentah selama N detik, log tipe + panjang + preview hex.
-# Tujuannya: identifikasi frame apa yang membawa update posisi pemain
-# lain (SkyDev) + formatnya — langkah 1 menuju bot follow.
-# Bot TIDAK bergerak / TIDAK kirim posisi di diag ini.
-# Dibuat 2026-11-09 atas permintaan Bartes (tes bot teman bermain).
-# Target HARUS online + bergerak di game selama tes. Jangan dipakai
-# untuk order. Kredensial bot via input (akun Gmail mandiri).
+# Bot mengikuti Bartes live: baca posisi Bartes dari relay 'C'
+# (Deflate, record 18 byte — TERBUKTI berisi koordinat Bartes),
+# kirim posisi 'C' bot ke sampingnya + 'tbulv' berkala agar tetap terlihat.
+# Menggantikan diag tangkap-frame 2026-11-09.
 on:
   workflow_dispatch:
     inputs:
       email:
-        description: "Email bot"
+        description: "Email bot pkxdshop"
         required: true
-        default: "pkxdshop.id@gmail.com"
       password:
-        description: "Password bot (ROTASI sesudah tes)"
+        description: "Password bot pkxdshop"
         required: true
       device_id:
-        description: "Device ID bot (kosong = bawaan probe)"
+        description: "Device ID bot (kosong = default probe)"
         required: false
         default: ""
       dest_user_id:
-        description: "UUID target (teman yang diikuti)"
+        description: "UUID target (SkyDev)"
         required: false
         default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
-      capture_seconds:
-        description: "Lama tangkap frame (detik)"
+      bot_user_id:
+        description: "UUID bot pkxdshop"
         required: false
-        default: "60"
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      duration:
+        description: "Detik follow (Bartes jalan pelan)"
+        required: false
+        default: "30"
+      start_x:
+        description: "X awal Bartes"
+        required: false
+        default: "-79.99"
+      start_y:
+        description: "Y awal Bartes"
+        required: false
+        default: "21.96"
+      start_z:
+        description: "Z awal Bartes"
+        required: false
+        default: "-76.42"
 
 jobs:
   diag:
@@ -38,14 +48,21 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - run: pip install curl_cffi urllib3
-      - run: python -u follow_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --capture-seconds "${{ inputs.capture_seconds }}"
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run follow
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
-          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
-          PET_RESULT_SECRET: ${{ secrets.PET_RESULT_SECRET }}
+          FOLLOW_EMAIL: ${{ inputs.email }}
+          FOLLOW_PASSWORD: ${{ inputs.password }}
+          FOLLOW_DEVICE_ID: ${{ inputs.device_id }}
+          FOLLOW_DEST_USER_ID: ${{ inputs.dest_user_id }}
+          FOLLOW_BOT_USER_ID: ${{ inputs.bot_user_id }}
+        run: |
+          python -u follow_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --dest-user-id "${{ inputs.dest_user_id }}" --bot-user-id "${{ inputs.bot_user_id }}" --duration "${{ inputs.duration }}" --start-x "${{ inputs.start_x }}" --start-y "${{ inputs.start_y }}" --start-z "${{ inputs.start_z }}"
