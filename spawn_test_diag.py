@@ -124,7 +124,13 @@ def parse_protobuf(buf):
     return out
 
 
-def build_spawn_aaa(x, y, z):
+def build_spawn_aaa(x, y, z, player_id=None):
+    """Frame posisi 'aaa' (tbulv). Perbaikan 2026-11-12 (Bartes): frame
+    'tbulv' ASLI dari pemain lain punya prefix `00 06 <ID-2byte>` sebelum
+    `[BE32(3)]'aaa' 05` — prefix itu TIDAK ADA di frame bot sebelumnya.
+    Bila player_id diberikan, sertakan prefix `00 06 <ID>` (ID = 2 byte
+    big-endian dari playerId koneksi). f1 Y/X masih hardcode dari pemain
+    lain (satu variabel per tes: prefix dulu, f1 belakangan)."""
     f32 = lambda v: struct.pack("<f", v)
     sub_y = bytes.fromhex("08f980a5ab05") + b"\x1d" + f32(y)
     sub_x = bytes.fromhex("089b87987010b3f2de61") + b"\x1d" + f32(x)
@@ -137,7 +143,10 @@ def build_spawn_aaa(x, y, z):
     for field, sub in ((1, sub_y), (2, sub_x), (3, sub_r),
                        (4, sub_z), (5, sub_v)):
         pb += bytes([(field << 3) | 2, len(sub)]) + sub
-    return struct.pack(">I", 3) + b"aaa" + b"\x05" + pb
+    prefix = b""
+    if player_id is not None:
+        prefix = bytes([0x00, 0x06]) + (player_id & 0xFFFF).to_bytes(2, "big")
+    return prefix + struct.pack(">I", 3) + b"aaa" + b"\x05" + pb
 
 
 def find_joinedroom_in_frames(frames, rm):
@@ -200,10 +209,12 @@ async def spawn_test_once(session, email, password, device_id,
     if not host or not port:
         print("[!] host/port tidak ketemu.")
         return hasil
-    sock, _pid = L.tcp_connect(host, port)
+    sock, pid = L.tcp_connect(host, port)
     if sock is None:
         print("[!] TCP connect gagal.")
         return hasil
+    hasil["player_id"] = pid
+    print(f"[+] Connected: playerId={pid} (2-byte ID: 0x{pid & 0xFFFF:04x}).")
     try:
         sock.sendall(L.build_login_frame(user_jwt))
     except Exception as exc:
@@ -250,9 +261,10 @@ async def spawn_test_once(session, email, password, device_id,
     hasil["spawn_pos"] = [round(sx, 2), round(sy, 2), round(sz, 2)]
     hasil["spawn_mode"] = smode
     try:
-        data = build_spawn_aaa(sx, sy, sz)
+        data = build_spawn_aaa(sx, sy, sz, player_id=pid)
         sock.sendall(L.build_room_event_varint("tbulv", data))
-        print(f"[+] Posisi spawn terkirim ({sx:.2f},{sy:.2f},{sz:.2f}) [{smode}].")
+        print(f"[+] Posisi spawn terkirim ({sx:.2f},{sy:.2f},{sz:.2f}) [{smode}] "
+              f"dengan prefix 00 06 {pid & 0xFFFF:04x}.")
         print(f"    frame 'aaa' hex: {data.hex()}")
     except Exception as exc:
         print(f"[!] kirim spawn gagal: {exc}")
@@ -266,7 +278,7 @@ async def spawn_test_once(session, email, password, device_id,
     # posisi SEKALI saja lalu tetap di bawah tanah — client asli kirim
     # posisi kontinu ~9,3x/detik; server mungkin butuh update kontinu
     # agar posisi "menempel". Frame yang dikirim ulang = data spawn.
-    spawn_frame = build_spawn_aaa(sx, sy, sz)
+    spawn_frame = build_spawn_aaa(sx, sy, sz, player_id=pid)
     hasil["heartbeat_s"] = 1.0
     hasil["heartbeat_sent"] = 0
 
