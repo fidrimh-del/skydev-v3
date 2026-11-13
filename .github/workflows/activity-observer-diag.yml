@@ -1,0 +1,52 @@
+name: DIAG Activity Observer — 2 bot di activity (observer + target)
+
+# Tes H2 (2026-11-13): apakah relay 'C'/RoomUserUpdate activity sampai
+# ke client TCP, dan apakah bot target diumumkan ke siapa pun di
+# instance yang sama?
+# Latar: Tahap B (run 43354159189) — bot join UGC via alokasi activity
+# (endpoint benar, JoinedRoom OK) tapi 'C' diterima tetap 0 dan Bartes
+# tidak melihat bot join sama sekali. Dua penjelasan tersisa:
+# (a) bot masuk INSTANCE berbeda dari Bartes, atau (b) server activity
+# tidak mendaftarkan/me-relay bot TCP sama sekali.
+# Script ini memakai 2 bot unnamed dari panel (RPC fresh, tanpa menulis
+# histori): OBSERVER masuk dulu, TARGET masuk sesudahnya, keduanya via
+# alokasi activity ke activityId yang sama. Observer dengar 80 dtk,
+# target heartbeat 60 dtk.
+# Bartes HARUS di dalam world dan BERGERAK (jalan) selama tes, supaya
+# 'C'-nya ada untuk di-relay.
+# Output: OBSERVER_JSON (same_instance, observer.c_received,
+# observer.room_user_update_target, target.c_received, spawn).
+on:
+  workflow_dispatch:
+    inputs:
+      activity_id:
+        description: "Activity ID world (default: world UGC Bartes)"
+        required: false
+        default: "3e7cec3f-1ae9-4ba2-a19b-a6339e0f9b23"
+      listen:
+        description: "Detik target di dalam activity sesudah spawn"
+        required: false
+        default: "60"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run activity observer test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          OBSERVER_ACTIVITY_ID: ${{ inputs.activity_id }}
+        run: |
+          python -u activity_observer_diag.py \
+            --activity-id "${{ inputs.activity_id }}" \
+            --listen "${{ inputs.listen }}"
