@@ -1,0 +1,108 @@
+name: DIAG Plaza First — bot ke Plaza dulu, baru join Sekolah
+
+# Tes hipotesis Bartes 2026-11-13: bot harus ke map utama (Plaza) DULU,
+# baru join teman ke Sekolah. Bot selama ini join Sekolah LANGSUNG via
+# alokasi destinationUserId dan wujudnya TIDAK PERNAH terlihat di
+# Sekolah (ESP hanya lihat titiknya), padahal di Plaza wujudnya
+# TERBUKTI muncul. Dugaan: server baru daftarkan bot sebagai pemain
+# penuh (RoomUserUpdate) lewat jalur map utama itu.
+# Fase 1: bot alokasi SENDIRI (tanpa destinationUserId) -> Plaza,
+#   posisi 'C' di koordinat Bartes kemarin (-79.99, 21.96, -76.42),
+#   heartbeat 'C' 1 dtk + 'tbulv' 5 dtk selama plaza_s (default 30).
+# Fase 2: putus TCP, alokasi ulang destinationUserId = Bartes ->
+#   Sekolah, dengar 'C' 10 dtk, spawn di posisi pemain paling sering
+#   terlihat (+1.5 X) atau fallback lantai Sekolah (5.80, 2.01, 830.87),
+#   heartbeat selama school_s (default 60). Bartes cek apakah wujud
+#   bot muncul di Sekolah. TIDAK kirim invite/consent — tes ini HANYA
+#   soal wujud. TIDAK kirim JoinRoom eksplisit (server auto-place).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      dest_user_id:
+        description: "UUID target (SkyDev, sedang di Sekolah)"
+        required: false
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      bot_user_id:
+        description: "UUID bot pkxdshop"
+        required: false
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      plaza_x:
+        description: "Plaza X (koordinat Bartes kemarin)"
+        required: false
+        default: "-79.99"
+      plaza_y:
+        description: "Plaza Y"
+        required: false
+        default: "21.96"
+      plaza_z:
+        description: "Plaza Z"
+        required: false
+        default: "-76.42"
+      plaza_s:
+        description: "Detik bot di Plaza sebelum pindah ke Sekolah"
+        required: false
+        default: "30"
+      school_s:
+        description: "Detik bot di Sekolah sesudah spawn"
+        required: false
+        default: "60"
+      school_fallback_x:
+        description: "Sekolah fallback X (lantai, bila 'C' kosong)"
+        required: false
+        default: "5.80"
+      school_fallback_y:
+        description: "Sekolah fallback Y"
+        required: false
+        default: "2.01"
+      school_fallback_z:
+        description: "Sekolah fallback Z"
+        required: false
+        default: "830.87"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run plaza-first test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PLAZA_FIRST_EMAIL: ${{ inputs.email }}
+          PLAZA_FIRST_PASSWORD: ${{ inputs.password }}
+          PLAZA_FIRST_DEVICE_ID: ${{ inputs.device_id }}
+          PLAZA_FIRST_DEST_USER_ID: ${{ inputs.dest_user_id }}
+          PLAZA_FIRST_BOT_USER_ID: ${{ inputs.bot_user_id }}
+        run: |
+          python -u plaza_first_school_diag.py \
+            --email "${{ inputs.email }}" \
+            --password "${{ inputs.password }}" \
+            --device-id "${{ inputs.device_id }}" \
+            --dest-user-id "${{ inputs.dest_user_id }}" \
+            --bot-user-id "${{ inputs.bot_user_id }}" \
+            --plaza-x "${{ inputs.plaza_x }}" \
+            --plaza-y "${{ inputs.plaza_y }}" \
+            --plaza-z "${{ inputs.plaza_z }}" \
+            --plaza-s "${{ inputs.plaza_s }}" \
+            --school-s "${{ inputs.school_s }}" \
+            --school-fallback-x "${{ inputs.school_fallback_x }}" \
+            --school-fallback-y "${{ inputs.school_fallback_y }}" \
+            --school-fallback-z "${{ inputs.school_fallback_z }}"
