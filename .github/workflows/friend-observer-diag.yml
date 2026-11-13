@@ -1,0 +1,71 @@
+name: DIAG Friend Observer — 1 bot dengar 'C' di instance teman
+
+# Tes H2 (2026-11-13): apakah relay 'C' activity sampai ke client TCP
+# yang ADA di instance yang sama?
+# Latar: Tes friend-join UGC (run 43355274811) — bot ADA di instance
+# Bartes (titiknya terlihat di posisi 0) tapi tanpa wujud; UGC dan
+# Sekolah sistemnya sama. Instance mismatch GUGUR.
+# Tes ini: SATU bot observer join via destinationUserId (UUID
+# Bartes/SkyDev — dijamin satu instance) + init activity + SendDeviceId
+# + 'tbulv' idle, lalu HANYA MENDENGARKAN selama listen (default 60)
+# tanpa kirim 'C' (observer murni).
+# Bartes HARUS di dalam world dan BERGERAK (jalan) selama tes, supaya
+# 'C'-nya ada untuk di-relay.
+# Output: FRIEND_OBS_JSON (c_received, c_positions_seen,
+# most_observed_pos, room_user_update).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      dest_user_id:
+        description: "UUID teman (default: SkyDev#431)"
+        required: false
+        default: "aae2efe1-1abb-48c2-8799-ea192692a49c"
+      bot_user_id:
+        description: "UUID bot pkxdshop"
+        required: false
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      listen:
+        description: "Detik observer mendengarkan"
+        required: false
+        default: "60"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run friend observer test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FRIEND_OBS_EMAIL: ${{ inputs.email }}
+          FRIEND_OBS_PASSWORD: ${{ inputs.password }}
+          FRIEND_OBS_DEVICE_ID: ${{ inputs.device_id }}
+          FRIEND_OBS_DEST_USER_ID: ${{ inputs.dest_user_id }}
+          FRIEND_OBS_BOT_USER_ID: ${{ inputs.bot_user_id }}
+        run: |
+          python -u friend_observer_diag.py \
+            --email "${{ inputs.email }}" \
+            --password "${{ inputs.password }}" \
+            --device-id "${{ inputs.device_id }}" \
+            --dest-user-id "${{ inputs.dest_user_id }}" \
+            --bot-user-id "${{ inputs.bot_user_id }}" \
+            --listen "${{ inputs.listen }}"
