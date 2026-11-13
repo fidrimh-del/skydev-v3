@@ -63,26 +63,46 @@ def _supabase():
 
 
 def get_bots(limit):
-    """Ambil bot unnamed dari panel lewat RPC fresh (tanpa menulis)."""
+    """Ambil bot unnamed dari panel (tanpa menulis histori).
+    Coba RPC get_fresh_bots dulu; bila 404 (RPC tidak ada di proyek
+    yang dituju SUPABASE_URL), fallback ke query langsung tabel
+    accounts (2 akun terbaru — paling mungkin fresh)."""
     url, key = _supabase()
     if not url or not key:
         print("[-] SUPABASE_URL / SUPABASE_SERVICE_KEY tidak ada di env.")
         return []
+    headers = {"apikey": key, "Authorization": "Bearer " + key,
+               "Content-Type": "application/json"}
     req = urllib.request.Request(
         url + "/rest/v1/rpc/get_fresh_bots",
         data=json.dumps({"p_limit": limit}).encode("utf-8"),
-        headers={"apikey": key, "Authorization": "Bearer " + key,
-                 "Content-Type": "application/json"},
-        method="POST")
+        headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             rows = json.loads(r.read().decode("utf-8"))
+        bots = [b for b in rows
+                if b.get("email") and b.get("password")
+                and b.get("device_id")]
+        print(f"[*] {len(bots)} bot unnamed didapat (RPC get_fresh_bots).")
+        if bots:
+            return bots
+    except urllib.error.HTTPError as e:
+        print(f"[-] RPC get_fresh_bots HTTP {e.code} -> fallback tabel accounts.")
     except Exception as e:
-        print(f"[-] RPC get_fresh_bots gagal: {e}")
+        print(f"[-] RPC get_fresh_bots gagal ({e}) -> fallback tabel accounts.")
+    req2 = urllib.request.Request(
+        url + "/rest/v1/accounts?select=email,password,device_id"
+        f"&order=id.desc&limit={limit}",
+        headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req2, timeout=20) as r:
+            rows = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        print(f"[-] query accounts gagal: {e}")
         return []
     bots = [b for b in rows
             if b.get("email") and b.get("password") and b.get("device_id")]
-    print(f"[*] {len(bots)} bot unnamed didapat (RPC get_fresh_bots).")
+    print(f"[*] {len(bots)} bot unnamed didapat (tabel accounts, terbaru).")
     return bots
 
 
