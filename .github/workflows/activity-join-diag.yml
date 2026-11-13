@@ -1,0 +1,92 @@
+name: DIAG Activity Join — bot join activity via alokasi ACTIVITY
+
+# Tes Tahap B (H1, 2026-11-13): bot join activity lewat alokasi ACTIVITY,
+# bukan alokasi destinationUserId.
+# Temuan Tahap A (~/workspace/transition_message_analysis.md): TIDAK ADA
+# pesan transisi Plaza->activity. Pembedanya = field alokasi. Bot selama
+# ini pakai POST /lobby/allocation + destinationUserId -> server anggap
+# "ikut user" (OnlineJoiningFriend=1). Client asli pakai
+# POST /lobby/activity/allocation + AllocateActivityRequest (userToken,
+# activityId, gameServerProtocolVersion, datacenterId) -> server anggap
+# "pemain activity" (JoiningActivity=3 / InitialConnectionToActivity=6).
+# Script mencoba endpoint activity dulu (+ datacenterId "blr1"); bila
+# tak kembalikan host, fallback ke /lobby/allocation + activityId
+# (bentuk activity_standby.py yang terbukti). Sesudah login: init
+# activity (init_pos, init_day_night, preset, fetch_events,
+# activity/get) + SendDeviceId + 'tbulv', dengar 'C' 10 dtk, spawn di
+# posisi pemain paling sering terlihat (+1.5 X) atau fallback (0,2,0),
+# heartbeat 'C' 1 dtk + 'tbulv' 5 dtk selama listen (default 60).
+# Verdict utama = mata Bartes di dalam world (apakah bot terlihat) +
+# log ('C' diterima > 0 berarti relay activity jalan).
+# Default activity = world UGC Bartes (3e7cec3f-1ae9-4ba2-a19b-a6339e0f9b23).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      activity_id:
+        description: "Activity ID world (default: world UGC Bartes)"
+        required: false
+        default: "3e7cec3f-1ae9-4ba2-a19b-a6339e0f9b23"
+      bot_user_id:
+        description: "UUID bot pkxdshop"
+        required: false
+        default: "71056756-53c7-478e-9356-82c87fb2dd63"
+      listen:
+        description: "Detik bot di dalam activity sesudah spawn"
+        required: false
+        default: "60"
+      fallback_x:
+        description: "Fallback spawn X (bila 'C' kosong)"
+        required: false
+        default: "0"
+      fallback_y:
+        description: "Fallback spawn Y"
+        required: false
+        default: "2"
+      fallback_z:
+        description: "Fallback spawn Z"
+        required: false
+        default: "0"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run activity join test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ACTIVITY_JOIN_EMAIL: ${{ inputs.email }}
+          ACTIVITY_JOIN_PASSWORD: ${{ inputs.password }}
+          ACTIVITY_JOIN_DEVICE_ID: ${{ inputs.device_id }}
+          ACTIVITY_JOIN_ACTIVITY_ID: ${{ inputs.activity_id }}
+          ACTIVITY_JOIN_BOT_USER_ID: ${{ inputs.bot_user_id }}
+        run: |
+          python -u activity_join_diag.py \
+            --email "${{ inputs.email }}" \
+            --password "${{ inputs.password }}" \
+            --device-id "${{ inputs.device_id }}" \
+            --activity-id "${{ inputs.activity_id }}" \
+            --bot-user-id "${{ inputs.bot_user_id }}" \
+            --listen "${{ inputs.listen }}" \
+            --fallback-x "${{ inputs.fallback_x }}" \
+            --fallback-y "${{ inputs.fallback_y }}" \
+            --fallback-z "${{ inputs.fallback_z }}"
