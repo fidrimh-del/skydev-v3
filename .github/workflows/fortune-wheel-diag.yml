@@ -25,6 +25,22 @@ on:
         description: "Device ID bot (kosong = default probe)"
         required: false
         default: ""
+      mode:
+        description: "login = verifikasi login saja (tanpa spin); spin = login + satu spin"
+        required: false
+        default: "spin"
+        type: choice
+        options:
+          - login
+          - spin
+      spin_type:
+        description: "Jenis spin (hanya dipakai bila mode=spin)"
+        required: false
+        default: "free"
+        type: choice
+        options:
+          - free
+          - ads
 
 jobs:
   diag:
@@ -46,5 +62,7 @@ jobs:
           FW_EMAIL: ${{ inputs.email }}
           FW_PASSWORD: ${{ inputs.password }}
           FW_DEVICE_ID: ${{ inputs.device_id }}
+          FW_MODE: ${{ inputs.mode }}
+          FW_SPIN_TYPE: ${{ inputs.spin_type }}
         run: |
-          python -u fortune_wheel_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}"
+          python -u fortune_wheel_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --mode "${{ inputs.mode }}" --spin-type "${{ inputs.spin_type }}"
