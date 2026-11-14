@@ -488,9 +488,13 @@ async def lootbox_info_once(session, email, password, device_id):
             ok = await save_config(session, config_id, lootbox_id, prizes)
             hasil["saved"][config_id] = "ok" if ok else "gagal"
 
-        # 4. Roda aktif: kirim "fw" GetRewards (payload kosong) dan
-        #    simpan config yang dikembalikan server. Ini server-driven:
-        #    event berganti -> daftar aktif ikut berganti. Bila langkah
+        # 4. Roda aktif: kirim "fw" GetInfo DULU lalu GetRewards (payload
+        #    kosong) dan simpan config yang dikembalikan server. Urutan
+        #    ini penting: client game selalu GetInfo dulu sebelum
+        #    GetRewards (FortuneWheelService), dan probe tanpa GetInfo
+        #    dulu mengembalikan Successful=true dengan config KOSONG
+        #    (run 43574970061, respons 2 byte "10 01"). Bila GetRewards
+        #    tetap kosong, coba sekali lagi setelah 1 dtk. Bila langkah
         #    ini gagal, daftar hadiah di atas tetap tersimpan; hanya
         #    daftar aktif yang tidak diperbarui (bukan fatal).
         def wait_fw(timeout=10):
@@ -502,42 +506,70 @@ async def lootbox_info_once(session, email, password, device_id):
                         return d
             return None
 
-        fw_data = None
-        for attempt in (1, 2):
+        def fw_send(label, payload, timeout=10):
+            """Kirim satu event 'fw', kembalikan data respons atau None."""
+            for attempt in (1, 2):
+                try:
+                    sock.sendall(L.build_room_event_varint("fw", payload))
+                except Exception as exc:
+                    print(f"[!] kirim {label} gagal: {exc}")
+                    return None
+                print(f"[*] kirim {label} "
+                      f"({payload.hex() if payload else '(kosong)'}), "
+                      f"percobaan {attempt}/2, tunggu respons maks "
+                      f"{timeout} dtk...")
+                data = wait_fw(timeout)
+                if data is not None:
+                    print(f"[+] respons 'fw' diterima untuk {label} "
+                          f"({len(data)} B): {data.hex()}")
+                    return data
+                print(f"[!] tidak ada respons 'fw' untuk {label} "
+                      f"(percobaan {attempt}/2).")
+            return None
+
+        info_fw = fw_send("fw GetInfo", bytes.fromhex("0802"))
+        if info_fw is not None:
             try:
-                sock.sendall(L.build_room_event_varint("fw", b""))
+                d = parse_protobuf(info_fw)
+                print(f"[+] fw GetInfo: Successful={bool(d.get(2))} "
+                      f"FreeCollected={bool(d.get(3))} "
+                      f"AdsWatchedCount={d.get(4) or 0}")
             except Exception as exc:
-                print(f"[!] kirim fw GetRewards gagal: {exc}")
-                break
-            print(f"[*] kirim fw GetRewards (kosong), percobaan "
-                  f"{attempt}/2, tunggu respons maks 10 dtk...")
-            fw_data = wait_fw(10)
-            if fw_data is not None:
-                break
-            print(f"[!] tidak ada respons 'fw' untuk GetRewards "
-                  f"(percobaan {attempt}/2).")
-        if fw_data is None:
-            print("[!] fw GetRewards: TIDAK ADA respons — daftar roda "
-                  "aktif tidak diperbarui.")
-        else:
-            print(f"[+] respons 'fw' diterima untuk GetRewards "
-                  f"({len(fw_data)} B): {fw_data.hex()}")
+                print(f"[!] parse fw GetInfo gagal: {exc!r} (lanjut)")
+        fw_data = fw_send("fw GetRewards", b"")
+        if fw_data is not None:
             try:
                 fw = parse_fw_getrewards(fw_data)
-                print(f"[+] fw GetRewards: Successful={fw.get('successful')} "
-                      f"config={fw.get('lootbox_config_ids')}")
-                if fw.get("successful") and fw.get("lootbox_config_ids"):
-                    hasil["active_wheel"] = list(fw["lootbox_config_ids"])
-                    hasil["active_wheel_saved"] = await save_active_wheel(
-                        session, hasil["active_wheel"])
+                if (fw.get("successful") and fw.get("lootbox_config_ids")):
+                    pass  # ok, lanjut simpan di bawah
                 else:
-                    print("[!] fw GetRewards Successful=false atau "
-                          "config kosong — daftar aktif tidak disimpan.")
+                    print("[*] fw GetRewards kosong — coba sekali lagi "
+                          "setelah 1 dtk (server mungkin belum siap).")
+                    time.sleep(1)
+                    fw_data = fw_send("fw GetRewards (ulang)", b"")
+                    fw = (parse_fw_getrewards(fw_data)
+                          if fw_data is not None else None)
             except Exception as exc:
                 print(f"[!] parse fw GetRewards gagal: {exc!r} "
                       f"(raw hex di atas)")
                 import traceback
                 traceback.print_exc()
+                fw = None
+        else:
+            fw = None
+        if fw is None:
+            print("[!] fw GetRewards: TIDAK ADA respons — daftar roda "
+                  "aktif tidak diperbarui.")
+        else:
+            print(f"[+] fw GetRewards: Successful={fw.get('successful')} "
+                  f"config={fw.get('lootbox_config_ids')}")
+            if fw.get("successful") and fw.get("lootbox_config_ids"):
+                hasil["active_wheel"] = list(fw["lootbox_config_ids"])
+                hasil["active_wheel_saved"] = await save_active_wheel(
+                    session, hasil["active_wheel"])
+            else:
+                print("[!] fw GetRewards Successful=false atau config "
+                      "kosong — daftar aktif tidak disimpan.")
     finally:
         try:
             sock.close()
