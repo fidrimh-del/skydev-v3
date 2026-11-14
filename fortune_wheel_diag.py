@@ -32,13 +32,26 @@ Latar (2026-11-14, analisis dump — ~/workspace/fortune_wheel_analysis.md):
   perlu online. TIDAK kirim JoinRoom.
 - Probe ini MEMAKAI jatah spin harian bot tes (gratis + iklan hari
   ini) — memang itu yang diminta Bartes.
+- Mode:
+    login: login lengkap + GetInfo + GetRewards TANPA Collect
+      (verifikasi kredensial dari panel; cetak LOGIN_JSON).
+    spin : login lengkap + GetInfo + GetRewards + SATU Collect
+      sesuai --spin-type (free = 08 01, ads = 08 01 10 01) — hanya
+      satu spin per run, sesuai pilihan pengguna (probe lama yang
+      melakukan keduanya sekaligus hanya untuk diagnosis awal).
+      Hasil spin disimpan ke tabel panel `spin_results` via PostgREST
+      (satu baris per spin: bot_email, spin_type, config_id, prize
+      + probabilitas bila cocok di spin_daily_prizes, wallet_after).
+      Wallet SEBELUM spin tidak dikembalikan GetInfo server, jadi
+      wallet_before disimpan null (bukan 0).
 - Spin 2 (iklan) hanya mengirim ANGKA AdsWatchedCount=1 dari client;
   apakah server memverifikasi iklan benar ditonton tidak terlihat
   dari dump — probe inilah yang membuktikannya (Successful=true
   berarti server percaya angka client).
 Alur: login -> alokasi sendiri -> TCP login -> tunggu jendela login
 (tbugv, maks 3 dtk) -> SendDeviceId ('Analytics/deviceId') ->
-GetInfo -> GetRewards -> Collect gratis -> Collect iklan (count=1).
+GetInfo -> GetRewards -> (mode login: berhenti di sini) ->
+(mode spin: SATU Collect sesuai spin_type -> simpan spin_results).
 Tiap request ditunggu responsnya maks 10 dtk, maks 1 kirim ulang
 bila tidak ada respons.
 """
@@ -220,12 +233,69 @@ def parse_collect(data):
             "rewards": [parse_lootbox_item(r) for r in _as_list(d, 4)]}
 
 
-async def fortune_wheel_once(session, email, password, device_id):
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
+
+async def fetch_config_prizes(session, config_ids):
+    """GET spin_daily_prizes untuk config tertentu -> {config_id: [prizes]}.
+    Dipakai untuk mencari probabilitas hadiah spin. Tanpa env -> {}."""
+    if not SUPABASE_URL or not SUPABASE_KEY or not config_ids:
+        return {}
+    headers = {"apikey": SUPABASE_KEY,
+               "Authorization": f"Bearer {SUPABASE_KEY}"}
+    out = {}
+    try:
+        for cid in config_ids:
+            endpoint = (f"{SUPABASE_URL}/rest/v1/spin_daily_prizes"
+                        f"?config_id=eq.{cid}&select=config_id,prizes")
+            r = await session.get(endpoint, headers=headers, timeout=15)
+            if r.status_code == 200:
+                rows = r.json()
+                if rows:
+                    out[cid] = rows[0].get("prizes") or []
+    except Exception as exc:
+        print(f"[!] baca spin_daily_prizes gagal: {type(exc).__name__}: {exc}")
+    return out
+
+
+async def save_spin_result(session, email, spin_type, config_id,
+                           prize, wallet_after):
+    """Insert satu baris hasil spin ke panel spin_results via PostgREST.
+    Kembalikan True bila HTTP 201. Key TIDAK pernah di-print.
+    wallet_before = None (GetInfo server tidak mengembalikan wallet)."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[!] SUPABASE_URL / SUPABASE_SERVICE_KEY tidak diset — "
+              "hasil spin tidak disimpan.")
+        return False
+    endpoint = f"{SUPABASE_URL}/rest/v1/spin_results"
+    headers = {"apikey": SUPABASE_KEY,
+               "Authorization": f"Bearer {SUPABASE_KEY}",
+               "Content-Type": "application/json",
+               "Prefer": "return=minimal"}
+    payload = {"bot_email": email, "spin_type": spin_type,
+               "config_id": config_id, "prize": prize,
+               "wallet_before": None, "wallet_after": wallet_after}
+    try:
+        r = await session.post(endpoint, json=payload, headers=headers,
+                               timeout=15)
+        print(f"[+] insert spin_results ({spin_type}, config={config_id}): "
+              f"HTTP {r.status_code}")
+        return r.status_code in (200, 201)
+    except Exception as exc:
+        print(f"[!] insert spin_results gagal: {type(exc).__name__}: {exc}")
+        return False
+
+
+async def fortune_wheel_once(session, email, password, device_id,
+                             mode="spin", spin_type="free"):
     hasil = {"email": email, "bot_user_id": BOT_USER_ID,
              "server": "", "room": None, "player_id": None,
              "login_ok": False, "deviceid_sent": False,
+             "mode": mode, "spin_type": spin_type,
              "getinfo": None, "rewards": None,
              "spin_free": None, "spin_ads": None,
+             "spin_saved": False, "spin_config_id": None,
              "error": None}
     user_jwt, alloc = await L.login_and_allocate(email, password, device_id,
                                                  session)
@@ -352,21 +422,61 @@ async def fortune_wheel_once(session, email, password, device_id):
         else:
             print("[!] GetRewards: TIDAK ADA respons — lanjut tetap (Collect).")
 
-        # 3. Collect gratis — LAKUKAN MESKIPUN FreeCollected sudah true
-        #    (server akan menjawab Successful=false — itu tetap data).
-        hasil["spin_free"] = fw_request("Collect gratis",
-                                        bytes.fromhex("0801"),
-                                        parse_collect)
-        _print_step("Collect gratis", hasil["spin_free"],
+        # Mode login: berhenti di sini — TANPA Collect (tanpa spin).
+        if mode == "login":
+            print("[*] mode login: GetInfo + GetRewards selesai, "
+                  "tanpa Collect — login terverifikasi.")
+            return hasil
+
+        # Mode spin: SATU Collect sesuai pilihan pengguna.
+        if spin_type == "ads":
+            label = "Collect iklan (count=1)"
+            payload = bytes.fromhex("08011001")
+            key = "spin_ads"
+        else:
+            label = "Collect gratis"
+            payload = bytes.fromhex("0801")
+            key = "spin_free"
+        hasil[key] = fw_request(label, payload, parse_collect)
+        _print_step(label, hasil[key],
                     ["successful", "wallet", "rewards"])
 
-        # 4. Collect iklan (count=1) — LAKUKAN MESKIPUN Collect gratis
-        #    gagal; keduanya independen.
-        hasil["spin_ads"] = fw_request("Collect iklan (count=1)",
-                                       bytes.fromhex("08011001"),
-                                       parse_collect)
-        _print_step("Collect iklan (count=1)", hasil["spin_ads"],
-                    ["successful", "wallet", "rewards"])
+        # Simpan hasil spin ke spin_results bila Collect berhasil.
+        spin = hasil[key]
+        if isinstance(spin, dict) and spin.get("successful"):
+            rewards = spin.get("rewards") or []
+            config_ids = []
+            gr = hasil.get("rewards") or {}
+            if isinstance(gr, dict):
+                config_ids = list(gr.get("lootbox_config_ids") or [])
+            hadiah = []
+            cfg_terpilih = None
+            # Cari probabilitas + config asal hadiah di spin_daily_prizes.
+            katalog = await fetch_config_prizes(session, config_ids)
+            for it in rewards:
+                p = dict(it)
+                for cid, plist in katalog.items():
+                    for k in plist or []:
+                        if (k.get("type") == p.get("type")
+                                and k.get("id") == p.get("id")
+                                and k.get("quantity") == p.get("quantity")):
+                            p["probability"] = k.get("probability")
+                            cfg_terpilih = cid
+                            break
+                    if p.get("probability") is not None:
+                        break
+                hadiah.append(p)
+            if cfg_terpilih is None and config_ids:
+                # Fallback: gratis -> config pertama, iklan -> config
+                # kedua (bila ada); pola roda saat ini.
+                cfg_terpilih = (config_ids[1] if spin_type == "ads"
+                                and len(config_ids) > 1 else config_ids[0])
+            hasil["spin_config_id"] = cfg_terpilih
+            hasil["spin_saved"] = await save_spin_result(
+                session, email, spin_type, cfg_terpilih, hadiah,
+                spin.get("wallet"))
+        elif isinstance(spin, dict) and "parse_error" not in spin:
+            print("[!] Collect tidak Successful — hasil spin tidak disimpan.")
     finally:
         try:
             sock.close()
@@ -381,6 +491,10 @@ async def main():
     ap.add_argument("--email", default=os.getenv("FW_EMAIL", ""))
     ap.add_argument("--password", default=os.getenv("FW_PASSWORD", ""))
     ap.add_argument("--device-id", default=os.getenv("FW_DEVICE_ID", ""))
+    ap.add_argument("--mode", default=os.getenv("FW_MODE", "spin"),
+                    choices=["login", "spin"])
+    ap.add_argument("--spin-type", default=os.getenv("FW_SPIN_TYPE", "free"),
+                    choices=["free", "ads"])
     args = ap.parse_args()
     if not args.email or not args.password:
         print("[!] email/password bot wajib diisi.")
@@ -388,7 +502,8 @@ async def main():
     async with L.AsyncSession(impersonate="chrome110",
                               verify=False) as session:
         hasil = await fortune_wheel_once(
-            session, args.email, args.password, args.device_id)
+            session, args.email, args.password, args.device_id,
+            mode=args.mode, spin_type=args.spin_type)
     hasil = _jsonable(hasil)
     print("")
     print("========== HASIL FORTUNE WHEEL ==========")
@@ -406,6 +521,8 @@ async def main():
             for p in it.get("pets") or []:
                 s += (f" pet={p.get('display_name')} "
                       f"(PetId={p.get('pet_id')}, Stage={p.get('stage')})")
+            if it.get("probability") is not None:
+                s += f" prob={it.get('probability')}"
             out.append(s)
         return out or ["(tidak ada)"]
 
@@ -416,18 +533,28 @@ async def main():
           f"AdsWatchedCount={gi.get('ads_watched_count')}")
     print(f"GetRewards: Successful={gr.get('successful')} "
           f"LootBoxConfigIds={gr.get('lootbox_config_ids')}")
-    print(f"Spin 1 (gratis): Successful={sf.get('successful')} "
-          f"Wallet={sf.get('wallet')}")
-    if sf.get("parse_error"):
-        print(f"  PARSE GAGAL: {sf.get('parse_error')} raw_hex={sf.get('raw_hex')}")
-    for line in _fmt_rewards(sf.get("rewards")):
-        print(f"  hadiah spin gratis: {line}")
-    print(f"Spin 2 (iklan count=1): Successful={sa.get('successful')} "
-          f"Wallet={sa.get('wallet')}")
-    if sa.get("parse_error"):
-        print(f"  PARSE GAGAL: {sa.get('parse_error')} raw_hex={sa.get('raw_hex')}")
-    for line in _fmt_rewards(sa.get("rewards")):
-        print(f"  hadiah spin iklan: {line}")
+    if args.mode == "login":
+        print("Mode login: tanpa Collect (tanpa spin).")
+        print("=========================================")
+        login_out = {
+            "login_ok": hasil.get("login_ok"),
+            "player_id": hasil.get("player_id"),
+            "free_collected": gi.get("free_collected"),
+            "ads_watched_count": gi.get("ads_watched_count"),
+            "lootbox_config_ids": gr.get("lootbox_config_ids"),
+            "error": hasil.get("error"),
+        }
+        print("LOGIN_JSON:" + json.dumps(login_out, separators=(",", ":")))
+        return 0 if hasil.get("login_ok") else 1
+    print(f"Spin ({args.spin_type}): Successful="
+          f"{(sf if args.spin_type == 'free' else sa).get('successful')} "
+          f"Wallet={(sf if args.spin_type == 'free' else sa).get('wallet')} "
+          f"config={hasil.get('spin_config_id')} saved={hasil.get('spin_saved')}")
+    spin_res = sf if args.spin_type == "free" else sa
+    if spin_res.get("parse_error"):
+        print(f"  PARSE GAGAL: {spin_res.get('parse_error')} raw_hex={spin_res.get('raw_hex')}")
+    for line in _fmt_rewards(spin_res.get("rewards")):
+        print(f"  hadiah spin {args.spin_type}: {line}")
     if hasil.get("error"):
         print(f"Error: {hasil.get('error')}")
     print("=========================================")
