@@ -146,7 +146,7 @@ def _nested(v):
 
 def _jsonable(v):
     if isinstance(v, dict):
-        return {str(k): _jsonable(x) for k, v in v.items()}
+        return {str(k): _jsonable(val) for k, val in v.items()}
     if isinstance(v, (list, tuple)):
         return [_jsonable(x) for x in v]
     if isinstance(v, (bytes, bytearray)):
@@ -176,21 +176,23 @@ def parse_lootbox_item(raw):
 
 
 def parse_getinfo(data):
+    # proto3: field bool/int yang tidak ditulis = False/0.
     d = parse_protobuf(data)
-    return {"event_id": d.get(1), "successful": d.get(2),
-            "free_collected": d.get(3), "ads_watched_count": d.get(4)}
+    return {"event_id": d.get(1) or 0, "successful": bool(d.get(2)),
+            "free_collected": bool(d.get(3)),
+            "ads_watched_count": d.get(4) or 0}
 
 
 def parse_getrewards(data):
     d = parse_protobuf(data)
-    return {"event_id": d.get(1), "successful": d.get(2),
+    return {"event_id": d.get(1) or 0, "successful": bool(d.get(2)),
             "lootbox_config_ids": _as_list(d, 3)}
 
 
 def parse_collect(data):
     d = parse_protobuf(data)
     wallet = d.get(3)
-    return {"event_id": d.get(1), "successful": d.get(2),
+    return {"event_id": d.get(1) or 0, "successful": bool(d.get(2)),
             "wallet": _jsonable(_nested(wallet)) if wallet is not None else None,
             "rewards": [parse_lootbox_item(r) for r in _as_list(d, 4)]}
 
@@ -277,9 +279,19 @@ async def fortune_wheel_once(session, email, password, device_id):
                       f"percobaan {attempt}/2, tunggu respons maks {timeout} dtk...")
                 data = wait_fw(timeout)
                 if data is not None:
+                    # Cetak hex mentah SEBELUM parse — bila parse gagal,
+                    # respons tidak hilang (bisa di-decode offline).
                     print(f"[+] respons 'fw' diterima untuk {label} "
-                          f"({len(data)} B).")
-                    return parse_fn(data)
+                          f"({len(data)} B): {data.hex()}")
+                    try:
+                        return parse_fn(data)
+                    except Exception as exc:
+                        print(f"[!] parse respons {label} gagal: {exc!r} "
+                              f"(raw hex di atas; lanjut langkah berikut)")
+                        import traceback
+                        traceback.print_exc()
+                        return {"parse_error": repr(exc),
+                                "raw_hex": data.hex()}
                 print(f"[!] tidak ada respons 'fw' untuk {label} "
                       f"(percobaan {attempt}/2).")
             return None
