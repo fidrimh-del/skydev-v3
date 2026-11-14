@@ -33,7 +33,14 @@ Alur: login -> alokasi sendiri -> TCP login -> tunggu jendela login
 (tbugv, maks 3 dtk) -> SendDeviceId ('Analytics/deviceId') ->
 GetLootBoxInfo -> per config GetLootBoxProbabilityInfo ->
 gabungkan probabilitas ke tiap hadiah -> simpan ke Supabase panel
-(tabel spin_daily_prizes, upsert per config_id).
+(tabel spin_daily_prizes, upsert per config_id) -> kirim "fw"
+GetRewards (payload kosong, sama seperti fortune_wheel_diag.py) dan
+simpan daftar config roda AKTIF yang dikembalikan server sebagai
+baris khusus config_id='_active_wheel' di tabel yang sama
+(prizes = {"active_configs": [...]}). Daftar aktif inilah yang
+ditampilkan halaman Spin Daily secara default (server-driven —
+event berganti, daftar ikut berganti; JANGAN hardcode config roda
+di halaman).
 Tiap request ditunggu responsnya maks 10 dtk, maks 1 kirim ulang
 bila tidak ada respons.
 """
@@ -276,11 +283,48 @@ async def save_config(session, config_id, lootbox_id, prizes):
         return False
 
 
+async def save_active_wheel(session, active_configs):
+    """Upsert baris khusus config_id='_active_wheel' ke panel
+    spin_daily_prizes: prizes = {"active_configs": [...]}.
+    Kembalikan True bila HTTP 200/201."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[!] SUPABASE_URL / SUPABASE_SERVICE_KEY tidak diset — "
+              "daftar roda aktif tidak disimpan.")
+        return False
+    endpoint = (f"{SUPABASE_URL}/rest/v1/spin_daily_prizes"
+                "?on_conflict=config_id")
+    headers = {"apikey": SUPABASE_KEY,
+               "Authorization": f"Bearer {SUPABASE_KEY}",
+               "Content-Type": "application/json",
+               "Prefer": "resolution=merge-duplicates"}
+    payload = {"config_id": "_active_wheel", "lootbox_id": None,
+               "prizes": {"active_configs": list(active_configs)},
+               "fetched_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        r = await session.post(endpoint, json=payload, headers=headers,
+                               timeout=15)
+        print(f"[+] upsert _active_wheel ({len(active_configs)} config aktif): "
+              f"HTTP {r.status_code}")
+        return r.status_code in (200, 201)
+    except Exception as exc:
+        print(f"[!] upsert _active_wheel gagal: {type(exc).__name__}: {exc}")
+        return False
+
+
+def parse_fw_getrewards(data):
+    """Respons 'fw' GetRewards: f1 EventId, f2 Successful,
+    f3 LootBoxConfigIds (repeated string)."""
+    d = parse_protobuf(data)
+    return {"event_id": d.get(1) or 0, "successful": bool(d.get(2)),
+            "lootbox_config_ids": _as_list(d, 3)}
+
+
 async def lootbox_info_once(session, email, password, device_id):
     hasil = {"email": email, "bot_user_id": BOT_USER_ID,
              "server": "", "room": None, "player_id": None,
              "login_ok": False, "deviceid_sent": False,
              "configs": [], "saved": {},
+             "active_wheel": [], "active_wheel_saved": False,
              "error": None}
     user_jwt, alloc = await L.login_and_allocate(email, password, device_id,
                                                  session)
@@ -443,6 +487,57 @@ async def lootbox_info_once(session, email, password, device_id):
             # 3. Simpan config ini ke Supabase panel.
             ok = await save_config(session, config_id, lootbox_id, prizes)
             hasil["saved"][config_id] = "ok" if ok else "gagal"
+
+        # 4. Roda aktif: kirim "fw" GetRewards (payload kosong) dan
+        #    simpan config yang dikembalikan server. Ini server-driven:
+        #    event berganti -> daftar aktif ikut berganti. Bila langkah
+        #    ini gagal, daftar hadiah di atas tetap tersimpan; hanya
+        #    daftar aktif yang tidak diperbarui (bukan fatal).
+        def wait_fw(timeout=10):
+            end = time.time() + timeout
+            while time.time() < end:
+                for f in fr.drain(0.5):
+                    name, d = G.decode_room_event(f)
+                    if name == "fw":
+                        return d
+            return None
+
+        fw_data = None
+        for attempt in (1, 2):
+            try:
+                sock.sendall(L.build_room_event_varint("fw", b""))
+            except Exception as exc:
+                print(f"[!] kirim fw GetRewards gagal: {exc}")
+                break
+            print(f"[*] kirim fw GetRewards (kosong), percobaan "
+                  f"{attempt}/2, tunggu respons maks 10 dtk...")
+            fw_data = wait_fw(10)
+            if fw_data is not None:
+                break
+            print(f"[!] tidak ada respons 'fw' untuk GetRewards "
+                  f"(percobaan {attempt}/2).")
+        if fw_data is None:
+            print("[!] fw GetRewards: TIDAK ADA respons — daftar roda "
+                  "aktif tidak diperbarui.")
+        else:
+            print(f"[+] respons 'fw' diterima untuk GetRewards "
+                  f"({len(fw_data)} B): {fw_data.hex()}")
+            try:
+                fw = parse_fw_getrewards(fw_data)
+                print(f"[+] fw GetRewards: Successful={fw.get('successful')} "
+                      f"config={fw.get('lootbox_config_ids')}")
+                if fw.get("successful") and fw.get("lootbox_config_ids"):
+                    hasil["active_wheel"] = list(fw["lootbox_config_ids"])
+                    hasil["active_wheel_saved"] = await save_active_wheel(
+                        session, hasil["active_wheel"])
+                else:
+                    print("[!] fw GetRewards Successful=false atau "
+                          "config kosong — daftar aktif tidak disimpan.")
+            except Exception as exc:
+                print(f"[!] parse fw GetRewards gagal: {exc!r} "
+                      f"(raw hex di atas)")
+                import traceback
+                traceback.print_exc()
     finally:
         try:
             sock.close()
@@ -488,11 +583,15 @@ async def main():
             print(s)
     if hasil.get("error"):
         print(f"Error: {hasil.get('error')}")
+    print(f"Roda aktif (fw GetRewards): {hasil.get('active_wheel')} "
+          f"saved={hasil.get('active_wheel_saved')}")
     print("========================================")
     out = {
         "login_ok": hasil.get("login_ok"),
         "server": hasil.get("server"),
         "player_id": hasil.get("player_id"),
+        "active_wheel": hasil.get("active_wheel") or [],
+        "active_wheel_saved": hasil.get("active_wheel_saved"),
         "configs": [
             {"config_id": c.get("config_id"),
              "lootbox_id": c.get("lootbox_id"),
