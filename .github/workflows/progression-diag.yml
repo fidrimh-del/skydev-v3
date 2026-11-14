@@ -1,0 +1,67 @@
+name: DIAG Progression — daftar KPI 1 bot tes
+
+# Probe Progression (2026-11-14, Bartes): bot pkxdshop membaca daftar
+# KPI Progression — apakah ada KPI UGC yang milestone-nya berhadiah
+# Role CreatorUgc?
+# Mekanik server ToxicBirdProgressionMechanic, RoomEvent "progression",
+# reliable=1 — pola identik dengan probe "fw" (Fortune Wheel) dan
+# "STRKS" (Daily Streak).
+#   GetInitializationInfo(version) = baca daftar KPI (payload:
+#   `12 <len> <version>`; version kosong -> payload kosong).
+# PROBE BACA SAJA — TIDAK kirim AcknowledgeMilestone / FetchKPIs /
+# ValidateMissingRewards / AcknowledgeStackedLevelUp. JANGAN klaim
+# milestone apa pun. Bila server mengirim MilestoneReached, hanya
+# dicatat, tidak di-acknowledge.
+# Respons GetInitializationInfoResponse: f1 EventId, f2 Kpis repeated,
+# f3 PlayerLevel, f4 LevelUpConfigs, f5 RemotePlayerLevelMap,
+# f6 IsSuccess, f7 ErrorMessage.
+# KPI: f1 Id, f2 Milestones, f3 Type (HOUSE=0, PETS=1, LIFESTYLE=2,
+# UGC=3), f4 Value, f5 MilestoneLevel, f6 DescKey, f7 CompleteDescKey.
+# Milestone: f1 Goal, f2 Reward (ProgressionReward: f1 Money,
+# f2 Items, f3 Role; RoleReward f1 Type = PlayerRole, CreatorUgc=4).
+# `progression_version` TIDAK ADA di dump (Remote Config) — script
+# mencoba version "" dulu, lalu "1" bila server tidak menjawab /
+# menolak. Input `versions` (koma, opsional) meng-override urutan itu.
+# TIDAK perlu destinationUserId (mekanik terdaftar di ToxicBirdClient,
+# bukan room); TIDAK kirim JoinRoom; Bartes tidak perlu online.
+# Jangan echo password di log (jangan set -x, jangan echo input).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      versions:
+        description: "Daftar progression_version dipisah koma (kosong = default '', lalu '1')"
+        required: false
+        default: ""
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi urllib3
+      - name: Run Progression probe
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PROG_EMAIL: ${{ inputs.email }}
+          PROG_PASSWORD: ${{ inputs.password }}
+          PROG_DEVICE_ID: ${{ inputs.device_id }}
+        run: |
+          python -u progression_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --versions "${{ inputs.versions }}"
