@@ -2,7 +2,11 @@ name: DIAG LootBox Info — daftar hadiah Spin Daily
 
 # Probe LootBox "lb" (2026-11-14, Bartes): 1 bot tes membaca daftar
 # hadiah Fortune Wheel + probabilitas, lalu mengisi tabel Supabase
-# panel `spin_daily_prizes` (upsert per config_id).
+# panel `spin_daily_prizes` (upsert per config_id). Setelah itu bot
+# mengirim "fw" GetRewards (payload kosong) dan menyimpan daftar
+# config roda AKTIF dari server sebagai baris khusus
+# config_id='_active_wheel' di tabel yang sama — halaman Spin Daily
+# hanya menampilkan config aktif secara default.
 # Mekanik server ToxicBirdLootBoxMechanic, RoomEvent "lb":
 #   GetLootBoxInfo            "lb" (kosong, 0 byte — EventId=0)
 #   GetLootBoxProbabilityInfo "lb" 08 01 10 <LootBoxId> 1A <len> <configId>
