@@ -1,0 +1,55 @@
+name: DIAG Daily Streak — klaim harian 1 bot tes
+
+# Probe Daily Streak (2026-11-14, Bartes): bot pkxdshop klaim hadiah
+# streak harian — apakah server menerima klaim dari bot?
+# Mekanik server ToxicBirdDailyStreakMechanic, RoomEvent + protobuf,
+# reliable=1 — pola identik dengan probe "fw" (Fortune Wheel).
+#   STRKS = cek status (payload KOSONG, 0 byte)
+#   STRKR = klaim hadiah (payload KOSONG, 0 byte)
+# TIDAK kirim STRKF (freeze) / STRKFR (force reset) di probe ini.
+# STRKR dikirim SEKALI saja, dan HANYA bila status awal
+# CollectedReward=false; bila sudah true, probe berhenti di status
+# (klaim kedua di hari yang sama TIDAK diuji di sini).
+# TIDAK ada field Successful di respons — sukses dideteksi dari isi
+# (LootBoxRewards / PetEggRewards non-empty, CurrentStreak naik,
+# atau re-STRKS CollectedReward=true).
+# TIDAK perlu destinationUserId (mekanik terdaftar di ToxicBirdClient,
+# bukan room); TIDAK kirim JoinRoom; Bartes tidak perlu online.
+# Probe ini MEMAKAI jatah klaim streak harian bot tes (bila diklaim).
+# Jangan echo password di log (jangan set -x, jangan echo input).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run Daily Streak probe
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          STREAK_EMAIL: ${{ inputs.email }}
+          STREAK_PASSWORD: ${{ inputs.password }}
+          STREAK_DEVICE_ID: ${{ inputs.device_id }}
+        run: |
+          python -u daily_streak_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}"
