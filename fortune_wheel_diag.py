@@ -70,10 +70,25 @@ def _add(out, field, val):
         out[field] = val
 
 
+def _try_str(chunk):
+    """Wire-2 chunk -> str HANYA bila isinya teks printable (nama/config
+    ID). Pesan nested berisi byte kontrol (tag/varint kecil) TIDAK
+    boleh jadi str — itu yang membuat parse LootBoxItem crash di run 2
+    (chunk 8 byte berisi 0x08/0x01/0x02 ter-decode jadi str)."""
+    try:
+        s = chunk.decode("utf-8")
+    except Exception:
+        return chunk
+    if s and all(c.isprintable() for c in s):
+        return s
+    return chunk
+
+
 def parse_protobuf(buf):
     """Parse protobuf generik. Wire 0 varint, wire 2 length-delim
     (panjang varint — BUKAN 1 byte, karena respons bisa >127 byte),
-    wire 5 fixed32, wire 1 fixed64. Field berulang dikumpulkan list."""
+    wire 5 fixed32, wire 1 fixed64. Field berulang dikumpulkan list.
+    Wire-2 yang bukan teks printable TETAP bytes (pesan nested)."""
     out = {}
     i = 0
     n = len(buf)
@@ -100,10 +115,7 @@ def parse_protobuf(buf):
             i += m
             chunk = bytes(buf[i:i + ln])
             i += ln
-            try:
-                _add(out, field, chunk.decode("utf-8"))
-            except Exception:
-                _add(out, field, chunk)
+            _add(out, field, _try_str(chunk))
         elif wire == 5:
             if i + 4 <= n:
                 _add(out, field, struct.unpack("<f", buf[i:i + 4])[0])
@@ -130,17 +142,28 @@ def _as_list(d, field):
     return [v]
 
 
-def _nested(v):
-    """Nilai wire-2 berupa bytes: coba parse sebagai protobuf nested;
-    bila kosong, kembalikan hex."""
+def _nested(v, depth=0):
+    """Nilai wire-2 berupa bytes: coba parse sebagai protobuf nested,
+    REKURSIF (maks 3 level — Wallet berisi daftar entri bernama
+    di field berulang f4). Bila tidak bisa diparse, kembalikan hex.
+    String/int diteruskan apa adanya. Catatan: chunk yang sudah
+    jadi str oleh _try_str (teks printable) tidak disentuh."""
     if isinstance(v, str):
         return v
     if isinstance(v, (bytes, bytearray)):
+        if depth > 3:
+            return {"hex": bytes(v).hex()}
         try:
             d = parse_protobuf(bytes(v))
         except Exception:
             d = {}
-        return d if d else {"hex": bytes(v).hex()}
+        if not d:
+            return {"hex": bytes(v).hex()}
+        return {k: _nested(x, depth + 1) for k, x in d.items()}
+    if isinstance(v, list):
+        return [_nested(x, depth) for x in v]
+    if isinstance(v, dict):
+        return {k: _nested(x, depth) for k, x in v.items()}
     return v
 
 
@@ -296,23 +319,36 @@ async def fortune_wheel_once(session, email, password, device_id):
                       f"(percobaan {attempt}/2).")
             return None
 
+        def _print_step(label, res, keys):
+            """Cetak hasil satu langkah; tahan terhadap dict parse_error
+            (tanpa 'successful') — jangan crash, langkah berikut tetap
+            jalan (pelajaran run 2: KeyError 'successful' mematikan
+            probe sebelum Collect iklan)."""
+            if res is None:
+                print(f"[!] {label}: TIDAK ADA respons.")
+                return
+            if isinstance(res, dict) and "parse_error" in res:
+                print(f"[!] {label}: parse gagal: {res['parse_error']}")
+                print(f"    raw_hex: {res.get('raw_hex')}")
+                return
+            print(f"[+] {label}: " + " ".join(
+                f"{k}={res.get(k)}" for k in keys))
+
         # 1. GetInfo — status harian server.
         hasil["getinfo"] = fw_request("GetInfo", bytes.fromhex("0802"),
                                       parse_getinfo)
         if hasil["getinfo"] is not None:
-            gi = hasil["getinfo"]
-            print(f"[+] GetInfo: Successful={gi['successful']} "
-                  f"FreeCollected={gi['free_collected']} "
-                  f"AdsWatchedCount={gi['ads_watched_count']}")
+            _print_step("GetInfo", hasil["getinfo"],
+                        ["successful", "free_collected",
+                         "ads_watched_count"])
         else:
             print("[!] GetInfo: TIDAK ADA respons — lanjut tetap (GetRewards).")
 
         # 2. GetRewards — daftar hadiah roda hari ini.
         hasil["rewards"] = fw_request("GetRewards", b"", parse_getrewards)
         if hasil["rewards"] is not None:
-            gr = hasil["rewards"]
-            print(f"[+] GetRewards: Successful={gr['successful']} "
-                  f"LootBoxConfigIds={gr['lootbox_config_ids']}")
+            _print_step("GetRewards", hasil["rewards"],
+                        ["successful", "lootbox_config_ids"])
         else:
             print("[!] GetRewards: TIDAK ADA respons — lanjut tetap (Collect).")
 
@@ -321,24 +357,16 @@ async def fortune_wheel_once(session, email, password, device_id):
         hasil["spin_free"] = fw_request("Collect gratis",
                                         bytes.fromhex("0801"),
                                         parse_collect)
-        if hasil["spin_free"] is not None:
-            sf = hasil["spin_free"]
-            print(f"[+] Collect gratis: Successful={sf['successful']} "
-                  f"Wallet={sf['wallet']} Rewards={sf['rewards']}")
-        else:
-            print("[!] Collect gratis: TIDAK ADA respons.")
+        _print_step("Collect gratis", hasil["spin_free"],
+                    ["successful", "wallet", "rewards"])
 
         # 4. Collect iklan (count=1) — LAKUKAN MESKIPUN Collect gratis
         #    gagal; keduanya independen.
         hasil["spin_ads"] = fw_request("Collect iklan (count=1)",
                                        bytes.fromhex("08011001"),
                                        parse_collect)
-        if hasil["spin_ads"] is not None:
-            sa = hasil["spin_ads"]
-            print(f"[+] Collect iklan: Successful={sa['successful']} "
-                  f"Wallet={sa['wallet']} Rewards={sa['rewards']}")
-        else:
-            print("[!] Collect iklan: TIDAK ADA respons.")
+        _print_step("Collect iklan (count=1)", hasil["spin_ads"],
+                    ["successful", "wallet", "rewards"])
     finally:
         try:
             sock.close()
@@ -390,10 +418,14 @@ async def main():
           f"LootBoxConfigIds={gr.get('lootbox_config_ids')}")
     print(f"Spin 1 (gratis): Successful={sf.get('successful')} "
           f"Wallet={sf.get('wallet')}")
+    if sf.get("parse_error"):
+        print(f"  PARSE GAGAL: {sf.get('parse_error')} raw_hex={sf.get('raw_hex')}")
     for line in _fmt_rewards(sf.get("rewards")):
         print(f"  hadiah spin gratis: {line}")
     print(f"Spin 2 (iklan count=1): Successful={sa.get('successful')} "
           f"Wallet={sa.get('wallet')}")
+    if sa.get("parse_error"):
+        print(f"  PARSE GAGAL: {sa.get('parse_error')} raw_hex={sa.get('raw_hex')}")
     for line in _fmt_rewards(sa.get("rewards")):
         print(f"  hadiah spin iklan: {line}")
     if hasil.get("error"):
