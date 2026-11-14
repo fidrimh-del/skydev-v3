@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-progression_visit_short_diag.py — Tes hitung kunjungan (hold pendek 6 dtk) `activity_visits_count`
+progression_visit_short_diag.py — Tes hitung kunjungan (hold 1 detik) `activity_visits_count`
 dengan 1 bot tes (pkxdshop.id@gmail.com). Perintah EKSPLISIT Bartes
 2026-11-14 22:16 WIB: "Coba tes loop lagi pakai 6 tapi lebih pendek waktunya, saat ini ada 134 kalau 140 berarti berhasil".
+KOREKSI FINAL Bartes: hold = 1 DETIK (bukan 6, bukan 0) — "agar aman": 1 detik cukup supaya kunjungan sempat tercatat, tapi tetap sangat cepat.
 
 Latar (probe run 43607035189):
 - KPI Progression `activity_visits_count` (type UGC=3): milestone [10]
@@ -10,18 +11,18 @@ Latar (probe run 43607035189):
 - Arah counter BELUM terbukti (visitor-side vs builder-side).
 - Baseline Bartes (angka SkyDev, hanya dia yang bisa lihat di game):
   total kunjungan level ke-4 ada di 134/4000 (naik dari 129 setelah tes 5 loop hold 15 dtk).
-  Sukses = setelah loop 6x hold 6 dtk, naik ke 140 (134+6). Angka "4000" tidak sama dengan goal
+  Sukses = setelah loop 6x hold 1 dtk, naik ke 140 (134+6). Angka "4000" tidak sama dengan goal
   milestone [4] dari probe (1.000) — JANGAN perdebatkan; pakai
-  baseline 129 dan kriteria +5 sebagai patokan. Delta +5 yang penting.
+  baseline 134 dan kriteria +6 sebagai patokan. Delta +6 yang penting.
 - Bot tes: `activity_visits_count` baseline 0 (probe 43607035189).
 
-DESAIN TES (1 bot x 6 loop hold 6 dtk — menguji apakah HOLD PENDEK masih tercatat):
+DESAIN TES (1 bot x 6 loop hold 1 dtk — menguji apakah hold 1 dtk tercatat):
 1. Baseline: GetInitializationInfo sebagai bot tes -> catat
    `activity_visits_count` (diharapkan 0).
 2. Loop 6x (bot tes yang sama): join ke world SkyDev (activity
-   3e7cec3f-1ae9-4ba2-a19b-a6339e0f9b23), tahan di dalam world 6
-   detik per loop (uji apakah hold pendek masih tercatat), lalu
-   disconnect, ulangi sampai 6x.
+   3e7cec3f-1ae9-4ba2-a19b-a6339e0f9b23), tahan 1 detik per loop setelah join terkonfirmasi (uji apakah hold
+   1 dtk tercatat; "agar aman" menurut Bartes), lalu disconnect,
+   ulangi sampai 6x.
    Jeda antar loop ~3 detik.
 3. Settle ~45 detik (server bisa cache/delay update KPI), lalu
    GetInitializationInfo lagi sebagai bot tes -> baca
@@ -30,7 +31,7 @@ DESAIN TES (1 bot x 6 loop hold 6 dtk — menguji apakah HOLD PENDEK masih terca
 TES BACA + JOIN SAJA — JANGAN klaim/acknowledge milestone apa pun
 (TIDAK kirim AcknowledgeMilestone / FetchKPIs /
 ValidateMissingRewards / AcknowledgeStackedLevelUp).
-JANGAN login sebagai SkyDev — angka SkyDev (129->134) HANYA bisa
+JANGAN login sebagai SkyDev — angka SkyDev (134->140) HANYA bisa
 dicek Bartes di gamenya.
 
 Alokasi join (robust, target TIDAK wajib online):
@@ -43,19 +44,19 @@ Alokasi join (robust, target TIDAK wajib online):
   bila target offline).
 JoinRoom TIDAK dikirim (server auto-place). Sesudah login: init
 activity (init_pos, init_day_night, preset, fetch_events,
-activity/get) + SendDeviceId + 'C' spawn, lalu hold dengan
-heartbeat 'C' tiap 2 detik.
+activity/get) + SendDeviceId + 'C' spawn, lalu hold 1 dtk (tanpa
+heartbeat — hold terlalu pendek), lalu disconnect.
 
 INTERPRETASI:
 - KPI bot tes naik 0->6: visitor-side TERBUKTI — counter menghitung
   kunjungan yang DILAKUKAN akun itu, dan tiap re-join dihitung.
-  Artinya angka SkyDev (129) TIDAK akan naik dari loop ini.
+  Artinya angka SkyDev (134) TIDAK akan naik dari loop ini.
 - KPI bot tes tetap 0: (i) builder-side (counter menghitung
   kunjungan KE world milik akun; bot tes tak punya world jadi tetap
   0), atau (ii) join tidak tercatat (stay terlalu pendek / server
-  dedupe / cache). Penentu: angka SkyDev Bartes (129->134 =
-  builder-side TERBUKTI dan loop berhasil; tetap 129 = join tidak
-  tercatat / perlu stay lebih lama / cache lebih lama).
+  dedupe / cache). Penentu: angka SkyDev Bartes (134->140 =
+  loop hold 1 dtk TERCATAT; tetap 134 = join hold 1 dtk tidak tercatat /
+  cache lebih lama).
 - KPI bot tes naik tapi bukan 6 (mis. 1-5): laporkan angka persisnya.
 """
 import argparse
@@ -161,7 +162,7 @@ def build_c_payload(x, y, z, teleported, sequence):
 
 
 async def join_once(session, email, password, device_id, activity_id,
-                    target_user_id, hold_s=15, loop_no=1):
+                    target_user_id, hold_s=1, loop_no=1):
     """Satu loop: login -> alokasi masuk world -> TCP login -> init
     activity + SendDeviceId + 'C' spawn -> tahan hold_s detik (drain
     frame + heartbeat 'C' tiap 2 dtk) -> disconnect. Satu loop gagal
@@ -265,8 +266,7 @@ async def join_once(session, email, password, device_id, activity_id,
         print(f"[+] loop {loop_no}: init activity + SendDeviceId terkirim.")
     except Exception as exc:
         print(f"[!] loop {loop_no}: kirim init gagal: {exc}")
-    # 'C' spawn (0,2,0) teleported=1, lalu hold dengan heartbeat 'C'
-    # tiap 2 dtk (teleported=0).
+    # 'C' spawn (0,2,0) teleported=1, lalu hold 1 dtk, lalu disconnect.
     seq = [0]
 
     def send_c(teleported):
@@ -315,7 +315,7 @@ async def main():
                     default=os.getenv("VISIT_TARGET_USER_ID",
                                       SKYDEV_USER_ID))
     ap.add_argument("--loops", type=int, default=6)
-    ap.add_argument("--hold", type=float, default=6)
+    ap.add_argument("--hold", type=float, default=1)
     ap.add_argument("--gap", type=float, default=3)
     ap.add_argument("--settle", type=float, default=45)
     args = ap.parse_args()
@@ -381,7 +381,7 @@ async def main():
         interp = ("TETAP_0: (i) BUILDER_SIDE (counter menghitung kunjungan "
                   "KE world milik akun; bot tes tak punya world jadi "
                   "tetap 0) — penentu: angka SkyDev Bartes 134->140 = "
-                  "builder-side TERBUKTI dan loop berhasil; tetap 129 = "
+                  "loop hold 1 dtk TERCATAT; tetap 134 = "
                   "join tidak tercatat; ATAU (ii) join tidak tercatat "
                   "(stay terlalu pendek / server dedupe / cache).")
     elif d > 0:
