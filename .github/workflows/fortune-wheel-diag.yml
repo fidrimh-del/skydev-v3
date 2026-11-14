@@ -8,6 +8,9 @@ name: DIAG Fortune Wheel — spin harian 1 bot tes
 #   GetRewards "fw" (kosong, 0 byte)
 #   Collect gratis "fw" 08 01
 #   Collect iklan  "fw" 08 01 10 01
+# MULTI-SPIN (2026-11-14, Bartes): spin GRATIS bisa diulang --count kali
+# (input spin_count, default 1, maks 50) dengan jeda 2 dtk antar spin
+# agar tidak terdeteksi server; spin IKLAN selalu 1x (--count diabaikan).
 # TIDAK perlu destinationUserId (mekanik terdaftar di ToxicBirdClient,
 # bukan room); TIDAK kirim JoinRoom; Bartes tidak perlu online.
 # Probe ini MEMAKAI jatah spin harian bot tes (gratis + iklan hari ini).
@@ -41,6 +44,11 @@ on:
         options:
           - free
           - ads
+      spin_count:
+        description: "Jumlah spin gratis (1-50); hanya dipakai bila spin_type=free; iklan selalu 1"
+        required: false
+        default: 1
+        type: number
 
 jobs:
   diag:
@@ -65,4 +73,4 @@ jobs:
           FW_MODE: ${{ inputs.mode }}
           FW_SPIN_TYPE: ${{ inputs.spin_type }}
         run: |
-          python -u fortune_wheel_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --mode "${{ inputs.mode }}" --spin-type "${{ inputs.spin_type }}"
+          python -u fortune_wheel_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --mode "${{ inputs.mode }}" --spin-type "${{ inputs.spin_type }}" --count "${{ inputs.spin_count }}"
