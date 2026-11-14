@@ -1,0 +1,50 @@
+name: DIAG Fortune Wheel — spin harian 1 bot tes
+
+# Probe Fortune Wheel (2026-11-14, Bartes): bot pkxdshop memutar spin
+# harian toko — spin pertama gratis, spin kedua "nonton iklan"
+# (hanya kirim angka AdsWatchedCount=1 dari client, tanpa iklan nyata).
+# Mekanik server ToxicBirdFortuneWheelMechanic, RoomEvent "fw":
+#   GetInfo   "fw" 08 02
+#   GetRewards "fw" (kosong, 0 byte)
+#   Collect gratis "fw" 08 01
+#   Collect iklan  "fw" 08 01 10 01
+# TIDAK perlu destinationUserId (mekanik terdaftar di ToxicBirdClient,
+# bukan room); TIDAK kirim JoinRoom; Bartes tidak perlu online.
+# Probe ini MEMAKAI jatah spin harian bot tes (gratis + iklan hari ini).
+# Jangan echo password di log (jangan set -x, jangan echo input).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run Fortune Wheel probe
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FW_EMAIL: ${{ inputs.email }}
+          FW_PASSWORD: ${{ inputs.password }}
+          FW_DEVICE_ID: ${{ inputs.device_id }}
+        run: |
+          python -u fortune_wheel_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}"
