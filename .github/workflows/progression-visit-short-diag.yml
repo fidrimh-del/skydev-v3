@@ -1,0 +1,70 @@
+name: DIAG Progression Visit Short — tes hitung kunjungan 1 bot tes (6 loop, hold 6 dtk)
+
+# Tes hitung kunjungan HOLD PENDEK (2026-11-14, Bartes): bot pkxdshop join world
+# SkyDev 6x (tahan 6 dtk/loop), lalu baca KPI `activity_visits_count`
+# sebelum vs sesudah — menjawab apakah RE-JOIN dihitung dan arah
+# counter (visitor-side vs builder-side).
+# Latar: KPI UGC `activity_visits_count` milestone [10] di 1.000.000
+# kunjungan berhadiah Role CreatorUgc (TERBUKTI, run 43607035189).
+# Baseline Bartes (angka SkyDev di game): 134/4000. Sukses = 140.
+# TES BACA + JOIN SAJA — TIDAK kirim AcknowledgeMilestone / FetchKPIs /
+# ValidateMissingRewards / AcknowledgeStackedLevelUp. JANGAN klaim
+# milestone apa pun. JANGAN login sebagai SkyDev.
+# Alur: baseline GetInitializationInfo (RoomEvent "progression",
+# payload kosong, version "" TERBUKTI) -> loop 6x join world
+# (alokasi activity dulu, fallback lobby+activityId, fallback
+# destinationUserId) -> settle 45 dtk -> GetInitializationInfo lagi.
+# JoinRoom TIDAK dikirim (server auto-place). Jangan echo password di
+# log (jangan set -x, jangan echo input).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      loops:
+        description: "Jumlah loop join (default 6)"
+        required: false
+        default: "6"
+      hold:
+        description: "Tahan di world per loop, detik (default 6)"
+        required: false
+        default: "6"
+      gap:
+        description: "Jeda antar loop, detik (default 3)"
+        required: false
+        default: "3"
+      settle:
+        description: "Tunggu setelah loop terakhir sebelum baca KPI, detik (default 45)"
+        required: false
+        default: "45"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi urllib3
+      - name: Run Progression visit test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          VISIT_EMAIL: ${{ inputs.email }}
+          VISIT_PASSWORD: ${{ inputs.password }}
+          VISIT_DEVICE_ID: ${{ inputs.device_id }}
+        run: |
+          python -u progression_visit_short_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --loops "${{ inputs.loops }}" --hold "${{ inputs.hold }}" --gap "${{ inputs.gap }}" --settle "${{ inputs.settle }}"
