@@ -1,0 +1,48 @@
+name: DIAG LootBox Info — daftar hadiah Spin Daily
+
+# Probe LootBox "lb" (2026-11-14, Bartes): 1 bot tes membaca daftar
+# hadiah Fortune Wheel + probabilitas, lalu mengisi tabel Supabase
+# panel `spin_daily_prizes` (upsert per config_id).
+# Mekanik server ToxicBirdLootBoxMechanic, RoomEvent "lb":
+#   GetLootBoxInfo            "lb" (kosong, 0 byte — EventId=0)
+#   GetLootBoxProbabilityInfo "lb" 08 01 10 <LootBoxId> 1A <len> <configId>
+# TIDAK perlu destinationUserId (mekanik terdaftar di ToxicBirdClient,
+# bukan room); TIDAK kirim JoinRoom; Bartes tidak perlu online.
+# Probe ini TIDAK memakai jatah spin (hanya baca, tidak buka peti).
+# Jangan echo password di log (jangan set -x, jangan echo input).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi
+      - name: Run LootBox Info probe
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LB_EMAIL: ${{ inputs.email }}
+          LB_PASSWORD: ${{ inputs.password }}
+          LB_DEVICE_ID: ${{ inputs.device_id }}
+        run: |
+          python -u lootbox_info_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}"
