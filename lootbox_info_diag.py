@@ -181,8 +181,14 @@ def _jsonable(v):
 
 def parse_pet_data(raw):
     d = parse_protobuf(raw) if isinstance(raw, (bytes, bytearray)) else raw
+    # f12 = PetType (int) — PetData.TypeFieldNumber = 12; client membaca
+    # f12 tanpa syarat (PetTransformations.ToCorePetData -> PetType @0x20;
+    # FortuneWheelCellView.Bind memakai PetType untuk lookup nama+thumb).
+    # SEBELUM 2026-11-14 parser ini membuang f12, jadi data tersimpan di
+    # spin_daily_prizes tidak punya Type dan katalog pet hanya bisa
+    # mengandalkan display_name ("DEFAULT" bila server tak mengirimnya).
     return {"pet_id": d.get(3), "display_name": d.get(4),
-            "stage": d.get(6)}
+            "stage": d.get(6), "type": d.get(12)}
 
 
 def parse_lootbox_item(raw):
