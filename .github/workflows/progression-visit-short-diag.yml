@@ -1,7 +1,7 @@
-name: DIAG Progression Visit Short — tes hitung kunjungan 1 bot tes (6 loop, hold 6 dtk)
+name: DIAG Progression Visit Short — tes hitung kunjungan 1 bot tes (6 loop, hold 1 dtk)
 
 # Tes hitung kunjungan HOLD PENDEK (2026-11-14, Bartes): bot pkxdshop join world
-# SkyDev 6x (tahan 6 dtk/loop), lalu baca KPI `activity_visits_count`
+# SkyDev 6x (tahan 1 dtk/loop), lalu baca KPI `activity_visits_count`
 # sebelum vs sesudah — menjawab apakah RE-JOIN dihitung dan arah
 # counter (visitor-side vs builder-side).
 # Latar: KPI UGC `activity_visits_count` milestone [10] di 1.000.000
@@ -34,9 +34,9 @@ on:
         required: false
         default: "6"
       hold:
-        description: "Tahan di world per loop, detik (default 6)"
+        description: "Tahan di world per loop, detik (default 1)"
         required: false
-        default: "6"
+        default: "1"
       gap:
         description: "Jeda antar loop, detik (default 3)"
         required: false
