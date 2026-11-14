@@ -35,13 +35,15 @@ Latar (2026-11-14, analisis dump — ~/workspace/fortune_wheel_analysis.md):
 - Mode:
     login: login lengkap + GetInfo + GetRewards TANPA Collect
       (verifikasi kredensial dari panel; cetak LOGIN_JSON).
-    spin : login lengkap + GetInfo + GetRewards + SATU Collect
-      sesuai --spin-type (free = 08 01, ads = 08 01 10 01) — hanya
-      satu spin per run, sesuai pilihan pengguna (probe lama yang
-      melakukan keduanya sekaligus hanya untuk diagnosis awal).
-      Hasil spin disimpan ke tabel panel `spin_results` via PostgREST
-      (satu baris per spin: bot_email, spin_type, config_id, prize
-      + probabilitas bila cocok di spin_daily_prizes, wallet_after).
+    spin : login lengkap + GetInfo + GetRewards + Collect sesuai
+      --spin-type (free = 08 01, ads = 08 01 10 01). Spin GRATIS bisa
+      diulang --count kali (default 1, jeda --delay detik antar spin,
+      default 2.0 — spin pertama tanpa jeda awal); server TIDAK
+      membatasi klaim gratis. Spin IKLAN selalu 1x (--count diabaikan).
+      Tiap spin disimpan ke tabel panel `spin_results` via PostgREST
+      (satu baris per spin) dan dikumpulkan ke list `spins`.
+      Cetak FORTUNE_WHEEL_MULTI_JSON (semua spin) + FORTUNE_WHEEL_JSON
+      (spin terakhir, kompatibilitas panel saat count=1).
       Wallet SEBELUM spin tidak dikembalikan GetInfo server, jadi
       wallet_before disimpan null (bukan 0).
 - Spin 2 (iklan) hanya mengirim ANGKA AdsWatchedCount=1 dari client;
@@ -51,7 +53,8 @@ Latar (2026-11-14, analisis dump — ~/workspace/fortune_wheel_analysis.md):
 Alur: login -> alokasi sendiri -> TCP login -> tunggu jendela login
 (tbugv, maks 3 dtk) -> SendDeviceId ('Analytics/deviceId') ->
 GetInfo -> GetRewards -> (mode login: berhenti di sini) ->
-(mode spin: SATU Collect sesuai spin_type -> simpan spin_results).
+(mode spin: Collect sesuai spin_type, gratis bisa diulang --count
+kali dengan jeda --delay detik antar spin -> simpan spin_results).
 Tiap request ditunggu responsnya maks 10 dtk, maks 1 kirim ulang
 bila tidak ada respons.
 """
@@ -288,7 +291,8 @@ async def save_spin_result(session, email, spin_type, config_id,
 
 
 async def fortune_wheel_once(session, email, password, device_id,
-                             mode="spin", spin_type="free"):
+                             mode="spin", spin_type="free", count=1,
+                             delay=2.0):
     hasil = {"email": email, "bot_user_id": BOT_USER_ID,
              "server": "", "room": None, "player_id": None,
              "login_ok": False, "deviceid_sent": False,
@@ -296,6 +300,8 @@ async def fortune_wheel_once(session, email, password, device_id,
              "getinfo": None, "rewards": None,
              "spin_free": None, "spin_ads": None,
              "spin_saved": False, "spin_config_id": None,
+             "spins": [], "spin_tried": 0, "spin_success": 0,
+             "spin_failed": 0,
              "error": None}
     user_jwt, alloc = await L.login_and_allocate(email, password, device_id,
                                                  session)
@@ -428,55 +434,97 @@ async def fortune_wheel_once(session, email, password, device_id,
                   "tanpa Collect — login terverifikasi.")
             return hasil
 
-        # Mode spin: SATU Collect sesuai pilihan pengguna.
-        if spin_type == "ads":
-            label = "Collect iklan (count=1)"
-            payload = bytes.fromhex("08011001")
-            key = "spin_ads"
-        else:
-            label = "Collect gratis"
-            payload = bytes.fromhex("0801")
-            key = "spin_free"
-        hasil[key] = fw_request(label, payload, parse_collect)
-        _print_step(label, hasil[key],
-                    ["successful", "wallet", "rewards"])
+        # Mode spin: Collect GRATIS bisa diulang --count kali (batch);
+        # spin IKLAN selalu 1x (--count diabaikan — iklan menutup hari).
+        if spin_type == "ads" and count != 1:
+            print("[*] spin_type=ads: count dipaksa 1 "
+                  "(batch hanya untuk spin gratis).")
+            count = 1
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = 1
+        count = max(1, min(50, count))
+        try:
+            delay = max(0.0, float(delay))
+        except (TypeError, ValueError):
+            delay = 2.0
+        # Katalog hadiah dibaca SEKALI, dipakai semua spin di batch ini.
+        config_ids = []
+        gr0 = hasil.get("rewards") or {}
+        if isinstance(gr0, dict):
+            config_ids = list(gr0.get("lootbox_config_ids") or [])
+        katalog = await fetch_config_prizes(session, config_ids)
+        spins = []
+        for idx in range(count):
+            if idx > 0:
+                # Jeda SETELAH respons Collect sebelumnya, SEBELUM spin
+                # berikutnya (spin pertama tanpa jeda awal).
+                print(f"[*] jeda {delay} dtk sebelum spin {idx + 1}/{count}...")
+                time.sleep(delay)
+            if spin_type == "ads":
+                label = "Collect iklan (count=1)"
+                payload = bytes.fromhex("08011001")
+                key = "spin_ads"
+            else:
+                label = f"Collect gratis ({idx + 1}/{count})"
+                payload = bytes.fromhex("0801")
+                key = "spin_free"
+            hasil[key] = fw_request(label, payload, parse_collect)
+            _print_step(label, hasil[key],
+                        ["successful", "wallet", "rewards"])
 
-        # Simpan hasil spin ke spin_results bila Collect berhasil.
-        spin = hasil[key]
-        if isinstance(spin, dict) and spin.get("successful"):
-            rewards = spin.get("rewards") or []
-            config_ids = []
-            gr = hasil.get("rewards") or {}
-            if isinstance(gr, dict):
-                config_ids = list(gr.get("lootbox_config_ids") or [])
-            hadiah = []
-            cfg_terpilih = None
-            # Cari probabilitas + config asal hadiah di spin_daily_prizes.
-            katalog = await fetch_config_prizes(session, config_ids)
-            for it in rewards:
-                p = dict(it)
-                for cid, plist in katalog.items():
-                    for k in plist or []:
-                        if (k.get("type") == p.get("type")
-                                and k.get("id") == p.get("id")
-                                and k.get("quantity") == p.get("quantity")):
-                            p["probability"] = k.get("probability")
-                            cfg_terpilih = cid
+            # Satu entri per spin (JSON lengkap: successful, rewards,
+            # wallet, config_id) — disimpan ke spin_results bila sukses.
+            spin = hasil[key]
+            entry = {"spin_index": idx + 1, "spin_type": spin_type,
+                     "successful": False, "rewards": [],
+                     "wallet": None, "config_id": None, "saved": False}
+            if isinstance(spin, dict) and spin.get("successful"):
+                entry["successful"] = True
+                entry["wallet"] = spin.get("wallet")
+                rewards = spin.get("rewards") or []
+                hadiah = []
+                cfg_terpilih = None
+                # Cari probabilitas + config asal hadiah di spin_daily_prizes.
+                for it in rewards:
+                    p = dict(it)
+                    for cid, plist in katalog.items():
+                        for k in plist or []:
+                            if (k.get("type") == p.get("type")
+                                    and k.get("id") == p.get("id")
+                                    and k.get("quantity") == p.get("quantity")):
+                                p["probability"] = k.get("probability")
+                                cfg_terpilih = cid
+                                break
+                        if p.get("probability") is not None:
                             break
-                    if p.get("probability") is not None:
-                        break
-                hadiah.append(p)
-            if cfg_terpilih is None and config_ids:
-                # Fallback: gratis -> config pertama, iklan -> config
-                # kedua (bila ada); pola roda saat ini.
-                cfg_terpilih = (config_ids[1] if spin_type == "ads"
-                                and len(config_ids) > 1 else config_ids[0])
-            hasil["spin_config_id"] = cfg_terpilih
-            hasil["spin_saved"] = await save_spin_result(
-                session, email, spin_type, cfg_terpilih, hadiah,
-                spin.get("wallet"))
-        elif isinstance(spin, dict) and "parse_error" not in spin:
-            print("[!] Collect tidak Successful — hasil spin tidak disimpan.")
+                    hadiah.append(p)
+                if cfg_terpilih is None and config_ids:
+                    # Fallback: gratis -> config pertama, iklan -> config
+                    # kedua (bila ada); pola roda saat ini.
+                    cfg_terpilih = (config_ids[1] if spin_type == "ads"
+                                    and len(config_ids) > 1 else config_ids[0])
+                entry["rewards"] = hadiah
+                entry["config_id"] = cfg_terpilih
+                hasil["spin_config_id"] = cfg_terpilih
+                entry["saved"] = await save_spin_result(
+                    session, email, spin_type, cfg_terpilih, hadiah,
+                    spin.get("wallet"))
+                hasil["spin_saved"] = entry["saved"]
+            elif isinstance(spin, dict) and "parse_error" in spin:
+                entry["parse_error"] = spin.get("parse_error")
+                entry["raw_hex"] = spin.get("raw_hex")
+            elif isinstance(spin, dict):
+                entry["rewards"] = spin.get("rewards") or []
+                entry["wallet"] = spin.get("wallet")
+                print("[!] Collect tidak Successful — hasil spin tidak disimpan.")
+            spins.append(entry)
+        hasil["spins"] = spins
+        hasil["spin_tried"] = len(spins)
+        hasil["spin_success"] = sum(1 for s in spins
+                                    if s.get("successful"))
+        hasil["spin_failed"] = len(spins) - hasil["spin_success"]
     finally:
         try:
             sock.close()
@@ -495,6 +543,13 @@ async def main():
                     choices=["login", "spin"])
     ap.add_argument("--spin-type", default=os.getenv("FW_SPIN_TYPE", "free"),
                     choices=["free", "ads"])
+    ap.add_argument("--count", type=int,
+                    default=int(os.getenv("FW_SPIN_COUNT", "1")),
+                    help="Jumlah spin gratis per run (default 1; "
+                         "iklan selalu 1, --count diabaikan)")
+    ap.add_argument("--delay", type=float,
+                    default=float(os.getenv("FW_SPIN_DELAY", "2.0")),
+                    help="Jeda detik antar spin gratis (default 2.0)")
     args = ap.parse_args()
     if not args.email or not args.password:
         print("[!] email/password bot wajib diisi.")
@@ -503,7 +558,8 @@ async def main():
                               verify=False) as session:
         hasil = await fortune_wheel_once(
             session, args.email, args.password, args.device_id,
-            mode=args.mode, spin_type=args.spin_type)
+            mode=args.mode, spin_type=args.spin_type,
+            count=args.count, delay=args.delay)
     hasil = _jsonable(hasil)
     print("")
     print("========== HASIL FORTUNE WHEEL ==========")
@@ -551,13 +607,40 @@ async def main():
           f"Wallet={(sf if args.spin_type == 'free' else sa).get('wallet')} "
           f"config={hasil.get('spin_config_id')} saved={hasil.get('spin_saved')}")
     spin_res = sf if args.spin_type == "free" else sa
-    if spin_res.get("parse_error"):
-        print(f"  PARSE GAGAL: {spin_res.get('parse_error')} raw_hex={spin_res.get('raw_hex')}")
-    for line in _fmt_rewards(spin_res.get("rewards")):
-        print(f"  hadiah spin {args.spin_type}: {line}")
+    spins = hasil.get("spins") or []
+    if spins:
+        for sp in spins:
+            n = sp.get("spin_index")
+            if sp.get("parse_error"):
+                print(f"  PARSE GAGAL spin {n}: {sp.get('parse_error')} "
+                      f"raw_hex={sp.get('raw_hex')}")
+            for line in _fmt_rewards(sp.get("rewards")):
+                print(f"  hadiah spin {n}/{len(spins)} {args.spin_type}: {line}")
+    else:
+        if spin_res.get("parse_error"):
+            print(f"  PARSE GAGAL: {spin_res.get('parse_error')} raw_hex={spin_res.get('raw_hex')}")
+        for line in _fmt_rewards(spin_res.get("rewards")):
+            print(f"  hadiah spin {args.spin_type}: {line}")
     if hasil.get("error"):
         print(f"Error: {hasil.get('error')}")
     print("=========================================")
+    if args.mode == "spin":
+        tried = hasil.get("spin_tried") or 0
+        ok = hasil.get("spin_success") or 0
+        gagal = hasil.get("spin_failed") or 0
+        print(f"Spin: {tried} dicoba, {ok} berhasil, {gagal} gagal")
+        multi_out = {
+            "spin_type": args.spin_type,
+            "count": tried,
+            "tried": tried,
+            "successful": ok,
+            "failed": gagal,
+            "spins": spins,
+            "login_ok": hasil.get("login_ok"),
+            "error": hasil.get("error"),
+        }
+        print("FORTUNE_WHEEL_MULTI_JSON:"
+              + json.dumps(multi_out, separators=(",", ":")))
     print("FORTUNE_WHEEL_JSON:" + json.dumps(hasil, separators=(",", ":")))
     return 0
 
