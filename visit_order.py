@@ -217,7 +217,9 @@ def run_bot(bot, activity_id, target_user_id, target_count,
             end_time, gap, login_sem, stats, lock, tag):
     """Satu bot: simpan 1 sesi, loop kirim sampai TARGET tercapai.
     Reservasi satu slot counter sebelum tiap kiriman; kiriman
-    gagal melepas reservasinya. Reconnect bila sesi putus."""
+    gagal melepas reservasinya. Reconnect bila sesi putus.
+    Keluar TANPA login bila target sudah tercapai selagi antre
+    giliran login; berhenti setelah 5x gagal alokasi beruntun."""
     email = bot.get("email") or ""
     password = bot.get("password") or ""
     device_id = bot.get("device_id") or ""
@@ -227,9 +229,15 @@ def run_bot(bot, activity_id, target_user_id, target_count,
     sends = 0
     reconnects = 0
     errors = {}
+    est_fail = 0
     while (not _target_reached(stats, lock, target_count)
            and time.time() < end_time):
         with login_sem:
+            # Antrean semaphore bisa lama: target mungkin sudah
+            # tercapai selagi menunggu giliran — keluar TANPA login
+            # (inilah yang bikin log penuh login zombie di run 43703317315).
+            if _target_reached(stats, lock, target_count):
+                break
             try:
                 est = asyncio.run(_establish(
                     email, password, device_id,
@@ -241,8 +249,14 @@ def run_bot(bot, activity_id, target_user_id, target_count,
         if not est:
             errors["login/alloc gagal"] = \
                 errors.get("login/alloc gagal", 0) + 1
+            est_fail += 1
+            if est_fail >= 5:
+                errors["berhenti: alloc gagal 5x"] = \
+                    errors.get("berhenti: alloc gagal 5x", 0) + 1
+                break
             time.sleep(5)
             continue
+        est_fail = 0
         user_jwt, body, endpoint, host, port = est
         _srv, rm = parse_gsid(body.get("gameServerId", ""))
         try:
