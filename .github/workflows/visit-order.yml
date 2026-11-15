@@ -2,17 +2,23 @@ name: VISIT ORDER — kunjungan UGC per order (GitHub akun ke-2)
 
 # Order kunjungan UGC varian SIMPAN-SESI (2026-11-15). Sama seperti
 # visit_loop.py, tapi berhenti begitu TARGET JUMLAH tercapai (bukan
-# durasi). Satu runner menangani target/20 (dihitung di step run);
-# total semua runner = target order (+/- kecil, lihat VISIT_ORDER_JSON
-# per runner; shortfall > 0 berarti top-up seperti aturan like).
-# Dipakai untuk produk Visitor Builder (order pelanggan): input
-# activity_id + target_user_id pemilik world + target_count.
+# durasi). Dipakai untuk produk Visitor Builder (order pelanggan):
+# input activity_id + target_user_id pemilik world + target_count.
 # Bot dari panel (RPC get_fresh_bots[_part]) TANPA tulis history.
-# Repo ini jalan di akun GitHub ke-2 (hellcatindonesia) agar runner
-# akun utama tidak terganggu orderan. Counter kunjungan HANYA bisa
-# dicek pemilik world di game (builder-side).
+# Workflow ini jalan di fidrimh-del/skydev-v3 (repo produk).
+# Counter kunjungan HANYA bisa dicek pemilik world di game (builder-side).
 # TIDAK kirim AcknowledgeMilestone. JANGAN login sebagai pemilik world.
 # Jangan echo password di log (jangan set -x, jangan echo input).
+#
+# RUNNER PINTAR (2026-11-15, perbaikan run 43703317315): jumlah runner
+# dihitung OTOMATIS dari target_count — 500 kunjungan per runner,
+# maks 20 runner, min 1. Input runners/runner_count dari panel
+# DIABAIKAN (tetap didefinisikan agar dispatch panel tidak 422).
+#   100 kunjungan -> 1 runner | 1.000 -> 2 | 5.000 -> 10 | 10.000+ -> 20
+# Bot per runner SELALU 20 (bentuk teruji pilot: 20 bot/runner, 0 error).
+# Alasan: run 43703317315 kirim --bots 400 ke TIAP runner (8.000 thread),
+# alokasi 429 ~95%, antrean semaphore 5 bikin login zombie ber menit-menit
+# padahal target 50/50 tercapai dalam ~30 dtk.
 on:
   workflow_dispatch:
     inputs:
@@ -27,7 +33,7 @@ on:
         required: false
         default: "10000"
       bots:
-        description: "Total bot (default 400)"
+        description: "Total bot (default 400; per runner maks 20)"
         required: false
         default: "400"
       gap:
@@ -35,11 +41,11 @@ on:
         required: false
         default: "2"
       runners:
-        description: 'JSON list index runner, mis. [0] atau [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]'
+        description: "DIABAIKAN — runner dihitung otomatis dari target_count"
         required: false
         default: "[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]"
       runner_count:
-        description: "Jumlah runner (harus sama dgn panjang runners)"
+        description: "DIABAIKAN — runner dihitung otomatis dari target_count"
         required: false
         default: "20"
       max_min:
@@ -48,12 +54,43 @@ on:
         default: "60"
 
 jobs:
+  siapkan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runner_count: ${{ steps.hitung.outputs.runner_count }}
+      runners: ${{ steps.hitung.outputs.runners }}
+      per_runner: ${{ steps.hitung.outputs.per_runner }}
+      bots_per_runner: ${{ steps.hitung.outputs.bots_per_runner }}
+    steps:
+      - id: hitung
+        run: |
+          python3 - <<'EOF'
+          import json, math, os
+          target = int("${{ inputs.target_count }}")
+          bots_total = int("${{ inputs.bots }}")
+          # 500 kunjungan per runner: kecil -> sedikit runner,
+          # besar -> maks 20 runner.
+          runner_count = max(1, min(20, math.ceil(target / 500)))
+          per_runner = math.ceil(target / runner_count)
+          bots_per_runner = max(1, min(20, math.ceil(bots_total / runner_count)))
+          runners = list(range(runner_count))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"runner_count={runner_count}\n")
+              f.write(f"runners={json.dumps(runners)}\n")
+              f.write(f"per_runner={per_runner}\n")
+              f.write(f"bots_per_runner={bots_per_runner}\n")
+          print(f"target={target} runners={runner_count} "
+                f"per_runner={per_runner} bots_per_runner={bots_per_runner}")
+          EOF
+
   order:
+    needs: siapkan
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       matrix:
-        runner: ${{ fromJSON(inputs.runners) }}
+        runner: ${{ fromJSON(needs.siapkan.outputs.runners) }}
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +106,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          TARGET_PER_RUNNER=$(( (${{ inputs.target_count }} + ${{ inputs.runner_count }} - 1) / ${{ inputs.runner_count }} ))
-          echo "Target per runner: $TARGET_PER_RUNNER dari total ${{ inputs.target_count }}"
-          python -u visit_order.py --activity-id "${{ inputs.activity_id }}" --target-user-id "${{ inputs.target_user_id }}" --target-count "$TARGET_PER_RUNNER" --bots "${{ inputs.bots }}" --partisi "${{ matrix.runner }}" --jumlah-partisi "${{ inputs.runner_count }}" --gap "${{ inputs.gap }}" --max-min "${{ inputs.max_min }}"
+          echo "Target per runner: ${{ needs.siapkan.outputs.per_runner }} dari total ${{ inputs.target_count }} (${{ needs.siapkan.outputs.runner_count }} runner x ${{ needs.siapkan.outputs.bots_per_runner }} bot)"
+          python -u visit_order.py --activity-id "${{ inputs.activity_id }}" --target-user-id "${{ inputs.target_user_id }}" --target-count "${{ needs.siapkan.outputs.per_runner }}" --bots "${{ needs.siapkan.outputs.bots_per_runner }}" --partisi "${{ matrix.runner }}" --jumlah-partisi "${{ needs.siapkan.outputs.runner_count }}" --gap "${{ inputs.gap }}" --max-min "${{ inputs.max_min }}"
