@@ -1,0 +1,74 @@
+name: VISIT ORDER — kunjungan UGC per order (GitHub akun ke-2)
+
+# Order kunjungan UGC varian SIMPAN-SESI (2026-11-15). Sama seperti
+# visit_loop.py, tapi berhenti begitu TARGET JUMLAH tercapai (bukan
+# durasi). Satu runner menangani target/20 (dihitung di step run);
+# total semua runner = target order (+/- kecil, lihat VISIT_ORDER_JSON
+# per runner; shortfall > 0 berarti top-up seperti aturan like).
+# Dipakai untuk produk Visitor Builder (order pelanggan): input
+# activity_id + target_user_id pemilik world + target_count.
+# Bot dari panel (RPC get_fresh_bots[_part]) TANPA tulis history.
+# Repo ini jalan di akun GitHub ke-2 (hellcatindonesia) agar runner
+# akun utama tidak terganggu orderan. Counter kunjungan HANYA bisa
+# dicek pemilik world di game (builder-side).
+# TIDAK kirim AcknowledgeMilestone. JANGAN login sebagai pemilik world.
+# Jangan echo password di log (jangan set -x, jangan echo input).
+on:
+  workflow_dispatch:
+    inputs:
+      activity_id:
+        description: "Activity ID world pelanggan (wajib)"
+        required: true
+      target_user_id:
+        description: "User ID pemilik world (wajib)"
+        required: true
+      target_count:
+        description: "Total kunjungan order (default 10000)"
+        required: false
+        default: "10000"
+      bots:
+        description: "Total bot (default 400)"
+        required: false
+        default: "400"
+      gap:
+        description: "Jeda antar kiriman per bot, detik (default 2)"
+        required: false
+        default: "2"
+      runners:
+        description: 'JSON list index runner, mis. [0] atau [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]'
+        required: false
+        default: "[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]"
+      runner_count:
+        description: "Jumlah runner (harus sama dgn panjang runners)"
+        required: false
+        default: "20"
+      max_min:
+        description: "Batas waktu menit per runner (default 60)"
+        required: false
+        default: "60"
+
+jobs:
+  order:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      matrix:
+        runner: ${{ fromJSON(inputs.runners) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi urllib3
+      - name: Run visit order
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          TARGET_PER_RUNNER=$(( (${{ inputs.target_count }} + ${{ inputs.runner_count }} - 1) / ${{ inputs.runner_count }} ))
+          echo "Target per runner: $TARGET_PER_RUNNER dari total ${{ inputs.target_count }}"
+          python -u visit_order.py --activity-id "${{ inputs.activity_id }}" --target-user-id "${{ inputs.target_user_id }}" --target-count "$TARGET_PER_RUNNER" --bots "${{ inputs.bots }}" --partisi "${{ matrix.runner }}" --jumlah-partisi "${{ inputs.runner_count }}" --gap "${{ inputs.gap }}" --max-min "${{ inputs.max_min }}"
