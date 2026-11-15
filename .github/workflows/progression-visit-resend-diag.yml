@@ -1,0 +1,64 @@
+name: DIAG Progression Visit Resend — kirim ulang init/'C' di 1 sesi TCP
+
+# Probe simpan-sesi (2026-11-15, Bartes): 1 bot tes, 1 login, 1 alokasi,
+# 1 sesi TCP; kirim rangkaian kunjungan (init activity + SendDeviceId +
+# 'C' spawn) 6x di sesi yang sama tanpa disconnect. Menjawab apakah
+# kirim ulang dihitung server sebagai kunjungan baru.
+# Latar: tes 30 rejoin TERKONFIRMASI di game 321 -> 351 (+30); tiap
+# loop itu login + alokasi + TCP baru (~9,6 dtk/loop). Ide Bartes:
+# login sekali, simpan sesi, loop join UGC-nya saja.
+# Baseline Bartes (angka SkyDev di game): 351. Sukses-penuh = 357 (+6).
+# +1 = 352 berarti kunjungan dihitung per sesi/alokasi (ide gugur).
+# TES BACA + JOIN SAJA — TIDAK kirim AcknowledgeMilestone / FetchKPIs /
+# ValidateMissingRewards / AcknowledgeStackedLevelUp. JANGAN klaim
+# milestone apa pun. JANGAN login sebagai SkyDev.
+# JoinRoom TIDAK dikirim (server auto-place). Jangan echo password di
+# log (jangan set -x, jangan echo input).
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot pkxdshop"
+        required: true
+      password:
+        description: "Password bot pkxdshop"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = default probe)"
+        required: false
+        default: ""
+      sends:
+        description: "Jumlah kirim ulang rangkaian (default 6)"
+        required: false
+        default: "6"
+      gap:
+        description: "Jeda antar kiriman, detik (default 5)"
+        required: false
+        default: "5"
+      settle:
+        description: "Tunggu setelah kiriman terakhir sebelum baca KPI, detik (default 45)"
+        required: false
+        default: "45"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q aiohttp curl-cffi urllib3
+      - name: Run Progression visit resend probe
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          VISIT_EMAIL: ${{ inputs.email }}
+          VISIT_PASSWORD: ${{ inputs.password }}
+          VISIT_DEVICE_ID: ${{ inputs.device_id }}
+        run: |
+          python -u progression_visit_resend_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --sends "${{ inputs.sends }}" --gap "${{ inputs.gap }}" --settle "${{ inputs.settle }}"
