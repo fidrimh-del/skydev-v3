@@ -1,0 +1,68 @@
+# SKYDEV Activity Join-Leave Matrix (Paralel)
+# Memecah pesanan join-leave UGC menjadi leg-leg kecil (maks 20 bot per leg)
+# Setiap leg berjalan di runner berbeda (IP publik Azure berbeda) agar tidak
+# terbentur batas koneksi room (~20 koneksi/IP) di server game.
+name: SKYDEV Activity Join-Leave Matrix (Paralel)
+on:
+  workflow_dispatch:
+    inputs:
+      activity_id:
+        description: "ActivityId world UGC (dari log mod v18)"
+        required: true
+      jumlah:
+        description: "Jumlah total bot join-leave yang diminta"
+        required: true
+        default: "100"
+      bot_type:
+        description: "Tipe bot: named_bots atau accounts"
+        required: false
+        default: "accounts"
+      tahan_detik:
+        description: "Tahan berapa detik setelah MASUK sebelum keluar (0 = langsung)"
+        required: false
+        default: "0"
+
+jobs:
+  siapkan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      partisi: ${{ steps.hitung.outputs.partisi }}
+      jumlah_leg: ${{ steps.hitung.outputs.jumlah_leg }}
+      legs: ${{ steps.hitung.outputs.legs }}
+    steps:
+      - id: hitung
+        run: |
+          python3 - <<'EOF'
+          import json, math, os
+          jumlah = int("${{ inputs.jumlah }}")
+          # Pembagi 20: batas aman koneksi room TCP per IP runner
+          legs = max(1, min(math.ceil(jumlah / 20), 100))
+          jumlah_leg = math.ceil(jumlah / legs)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"partisi={json.dumps(list(range(legs)))}\n")
+              f.write(f"jumlah_leg={jumlah_leg}\n")
+              f.write(f"legs={legs}\n")
+          print(f"jumlah={jumlah} legs={legs} jumlah_leg={jumlah_leg}")
+          EOF
+
+  joinleave:
+    needs: siapkan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        partisi: ${{ fromJSON(needs.siapkan.outputs.partisi) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u test-activity/activity_joinleave.py "${{ inputs.activity_id }}" "${{ needs.siapkan.outputs.jumlah_leg }}" "${{ inputs.bot_type }}" "${{ inputs.tahan_detik }}" "${{ matrix.partisi }}" "${{ needs.siapkan.outputs.legs }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
