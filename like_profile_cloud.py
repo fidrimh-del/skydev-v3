@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import lookup_uuid as L
 import like_profile_probe as P
+import run_guard
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
