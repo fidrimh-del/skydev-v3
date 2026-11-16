@@ -277,6 +277,8 @@ def main():
             return 1
         target_uuid = hit["uuid"]
 
+    run_guard.guard_or_exit(target_uuid, "like-house-matrix")
+
     pakai_rpc_baru = True
     sudah = set()
 
