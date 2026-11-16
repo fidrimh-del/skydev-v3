@@ -355,6 +355,8 @@ def main():
     if not supabase_url or not supabase_key:
         print("[!] EROR: SUPABASE_URL / SUPABASE_SERVICE_KEY kosong.")
         return 1
+
+    run_guard.guard_or_exit(args.activity_id, "visit-order")
     bots = fetch_bots(supabase_url, supabase_key,
                       args.target_user_id, args.bots,
                       args.partisi, args.jumlah_partisi,
