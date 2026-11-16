@@ -363,6 +363,7 @@ async def main():
         if not target_posts:
             print("[!] Daftar target postingan kosong.")
             sys.exit(1)
+        run_guard.guard_or_exit(",".join(sorted(target_posts)), "like-post-matrix")
 
         # Semaphore 30: seimbang untuk HTTP requests tanpa memicu socket hang
         semaphore = asyncio.Semaphore(30)
