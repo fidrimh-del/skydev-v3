@@ -202,6 +202,7 @@ async def main():
         sys.exit(1)
 
     target_uuid = sys.argv[1].strip()
+    run_guard.guard_or_exit(target_uuid, "follow-matrix")
     try:
         jumlah_order = int(sys.argv[2].strip())
     except ValueError:
