@@ -24,6 +24,7 @@ import urllib.request
 import house_like_probe as H
 import like_profile_probe as P
 import lookup_uuid as L
+import run_guard
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
