@@ -1,0 +1,57 @@
+name: DIAG Loop Crazy Run sampai MAX (1 bot, 1 run)
+
+# Tes 1 run Crazy Run dengan pet AKTIF + IsThereXpToReceive=TRUE,
+# untuk mengukur XP pet per run. Alur: baca XP pet -> Activate pet
+# (RoomEvent "pet", EventId=4) -> Crazy Run finish isXp=TRUE ->
+# QuestTrigger wasWithPet=TRUE -> baca XP pet lagi -> HASIL delta XP.
+# Dibuat 2026-11-19 atas permintaan Bartes. Bukan produksi.
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email bot"
+        required: true
+        default: "pkxdshop.id@gmail.com"
+      password:
+        description: "Password bot (ROTASI sesudah tes)"
+        required: true
+      device_id:
+        description: "Device ID bot (kosong = bawaan probe)"
+        required: false
+        default: ""
+      pet_id:
+        description: "Pet ID yang di-activate + diukur XP-nya"
+        required: true
+        default: "378425aa-4d7e-4f14-84bd-4ac551c6c1cf"
+      run_time:
+        description: "Waktu finish yang dikirim (detik)"
+        required: false
+        default: "12"
+      wait_start:
+        description: "Tunggu Start sesudah Join (detik)"
+        required: false
+        default: "10"
+      max_runs:
+        description: "Maksimal run dalam job ini (berhenti bila max tercapai)"
+        required: false
+        default: "12"
+      fast:
+        description: "Mode cepat: 1 = drain pendek, tanpa Count per run, XP dari QuestReward"
+        required: false
+        default: "0"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install curl_cffi urllib3
+      - run: python -u crazyrun_maxpet_diag.py --email "${{ inputs.email }}" --password "${{ inputs.password }}" --device-id "${{ inputs.device_id }}" --pet-id "${{ inputs.pet_id }}" --time "${{ inputs.run_time }}" --wait-start "${{ inputs.wait_start }}" --max-runs "${{ inputs.max_runs }}" --fast "${{ inputs.fast }}"
+        env:
+          FSTR_APP_KEY: ${{ secrets.FSTR_APP_KEY }}
+          FSTR_APP_SECRET: ${{ secrets.FSTR_APP_SECRET }}
+          PET_RESULT_SECRET: ${{ secrets.PET_RESULT_SECRET }}
