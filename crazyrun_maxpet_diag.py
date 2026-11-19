@@ -12,6 +12,17 @@ Alur (sesuai dump_3, diverifikasi 2026-11-19):
   -> QuestTrigger CRAZY_RUN_FINISHED dengan wasWithPet=TRUE
   -> Count SESUDAH -> baca XP pet SESUDAH -> HASIL (delta XP).
 
+Mode cepat (--fast) v2 (perbaikan 2026-11-19, atas perintah Bartes):
+  v1 (drain 2/2/1/1, tanpa Count sama sekali) TIDAK PERNAH beri XP di
+  PlayerResult (run 44471366600: RUN 1 RunCount naik tapi QuestReward
+  kosong, RUN 2 tanpa PlayerResult) — padahal XP +30-nya ternyata
+  mendarat BELAKANGAN (terlihat di tes normal 13:22: XP awal 60,
+  bukan 30). v2: Count SEKALI di awal (diduga menegakkan state sesi
+  Crazy Run di server — semua run yang pernah beri +30 mengirim Count
+  sebelum JoinGame pertama), drain 4/4/3/2, tunggu baca-ulang stall
+  8 dtk. Count per-run tetap dilewati (hemat 12 dtk/run); target
+  ~15-20 dtk/run vs ~36 dtk normal.
+
 Pet default: FalconNeon pkxdshop 378425aa-4d7e-4f14-84bd-4ac551c6c1cf
 (stage 2, training gym-nya baru selesai 2026-11-19 10:20).
 
@@ -393,8 +404,9 @@ async def main():
     ap.add_argument("--target-xp", type=int,
                     default=int(os.getenv("MAXPET_TARGET_XP", "320")))
     ap.add_argument("--fast", default=os.getenv("MAXPET_FAST", "0"),
-                    help="Mode cepat: drain pendek, tanpa Count per run, "
-                         "XP dari QuestReward (1/true = aktif)")
+                    help="Mode cepat v2: Count sekali di awal + drain "
+                         "4/4/3/2, tanpa Count per run, XP dari QuestReward "
+                         "(1/true = aktif)")
     args = ap.parse_args()
     args.fast = str(args.fast).lower() in ("1", "true", "yes", "y")
     if not args.email or not args.password:
@@ -581,15 +593,25 @@ async def main():
 
         # --- ukur awal ---
         baca_xp_pet()
-        if not args.fast:
-            # Mode cepat: Count (energi) hanya info — lewati, hemat 12 dtk.
-            baca_count()
+        # Count SEKALI di awal — JUGA di mode cepat (perbaikan fast v2,
+        # 2026-11-19). Fast v1 tidak pernah kirim Count dan tidak pernah
+        # dapat XP di PlayerResult (run 44471366600), sementara SEMUA run
+        # yang pernah beri +30 mengirim Count sebelum JoinGame pertama —
+        # Count diduga menegakkan state sesi Crazy Run di server, bukan
+        # sekadar baca energi. Hemat 12 dtk/run tetap berlaku: Count
+        # per-run tetap dilewati di mode cepat.
+        baca_count()
         # Mode cepat (--fast): drain() menunggu PENUH tiap jendela, jadi
         # tiap detik yang dipotong langsung menghemat waktu run.
-        d_join = 2 if args.fast else 6
-        d_end = 2 if args.fast else 6
-        d_quest = 1 if args.fast else 4
-        d_leave = 1 if args.fast else 2
+        # Fast v2: drain v1 (2/2/1/1) terlalu pendek — PlayerResult RUN 2
+        # tidak pernah tiba dan QuestReward RUN 1 tidak ada di jendela
+        # 2 dtk (XP-nya baru mendarat belakangan). Naikkan ke 4/4/3/2:
+        # masih ~2x lebih cepat dari normal, tapi cukup lama agar server
+        # sempat memproses tiap langkah.
+        d_join = 4 if args.fast else 6
+        d_end = 4 if args.fast else 6
+        d_quest = 3 if args.fast else 4
+        d_leave = 2 if args.fast else 2
         print(f"[*] AWAL: xp={state['xp']} stage={state['stage']} "
               f"energi={state['energy']} RunCount={state['run_count']}")
 
@@ -677,11 +699,13 @@ async def main():
             if gained == 0 and state["xp"] is not None \
                     and state["xp"] < args.target_xp:
                 # Pet list lambat update (run 44455410904: baca pertama
-                # 60, baca berikutnya 90) — tunggu 8 dtk + baca ulang
-                # sebelum menyimpulkan stall.
-                print(f"[!] XP tampak tidak naik — tunggu "
-                      f"{4 if args.fast else 8} dtk, baca ulang.")
-                time.sleep(4 if args.fast else 8)
+                # 60, baca berikutnya 90; run fast 44471366600: +30 baru
+                # terlihat di tes berikutnya) — tunggu 8 dtk + baca ulang
+                # sebelum menyimpulkan stall (fast v2: jangan simpulkan
+                # stall terlalu cepat).
+                print("[!] XP tampak tidak naik — tunggu 8 dtk, "
+                      "baca ulang.")
+                time.sleep(8)
                 baca_xp_pet()
                 gained = (None if xp_before is None or state["xp"] is None
                           else state["xp"] - xp_before)
