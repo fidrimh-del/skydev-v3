@@ -162,13 +162,15 @@ def _raw_fields(data):
 
 
 def _parse_petdata(data):
-    """Parse satu PetData -> dict {pet_id, display_name, type, owner_id, stage}.
+    """Parse satu PetData -> dict {pet_id, display_name, type, owner_id,
+    stage, xp}.
     PetData: f1 OwnerId, f2 CreatedAt, f3 PetId, f4 DisplayName,
-    f6 Stage (PetStage enum, lihat atas), f12 Type.
+    f6 Stage (PetStage enum, lihat atas), f12 Type,
+    f13 ExperiencePoints (varint; hilang bila 0 -> xp=0).
     Catatan: protobuf menghilangkan field bernilai 0, jadi pet telur
     (NotIncubated=0) terbaca stage=None."""
     pet = {"pet_id": None, "display_name": None,
-           "type": None, "owner_id": None, "stage": None}
+           "type": None, "owner_id": None, "stage": None, "xp": 0}
     for f3, w3, v3 in _raw_fields(bytes(data)):
         if f3 == 1 and w3 == 2:
             try:
@@ -189,6 +191,8 @@ def _parse_petdata(data):
             pet["stage"] = v3
         elif f3 == 12 and w3 == 0:
             pet["type"] = v3
+        elif f3 == 13 and w3 == 0:
+            pet["xp"] = v3
     return pet
 
 
@@ -491,8 +495,6 @@ def _kirim_hasil_cepat(kind, email, result):
 
 
 async def main():
-    # Baca versi game/protokol dari dashboard panel (app_settings).
-    L.apply_panel_versions()
     global VERBOSE
     ap = argparse.ArgumentParser()
     ap.add_argument("--email", default=os.getenv("PETLIST_EMAIL", ""))
@@ -528,7 +530,7 @@ async def main():
     # di bawah) agar log tetap kecil & cepat diunduh panel.
     for p in hasil["pets"][:20]:
         print(f"    - id={p['pet_id']} type={p['type']} stage={p.get('stage')} "
-              f"name={p['display_name']!r} owner={p['owner_id']}")
+              f"xp={p.get('xp', 0)} name={p['display_name']!r} owner={p['owner_id']}")
     if len(hasil["pets"]) > 20:
         print(f"    - ... +{len(hasil['pets']) - 20} pet lagi (lihat PETLIST_JSON)")
     if hasil.get("pets_by_command"):
@@ -551,7 +553,7 @@ async def main():
         "pets": [
             {"pet_id": p["pet_id"], "type": p["type"],
              "display_name": p["display_name"], "owner_id": p["owner_id"],
-             "stage": p.get("stage")}
+             "stage": p.get("stage"), "xp": p.get("xp", 0)}
             for p in hasil["pets"]
         ],
         "successful": hasil["successful"],
@@ -566,7 +568,7 @@ async def main():
         "pets": [
             {"pet_id": p["pet_id"], "type": p["type"],
              "display_name": p["display_name"], "owner_id": p["owner_id"],
-             "stage": p.get("stage")}
+             "stage": p.get("stage"), "xp": p.get("xp", 0)}
             for p in hasil["pets"]
         ],
         "successful": hasil["successful"],
