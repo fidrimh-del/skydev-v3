@@ -462,7 +462,9 @@ def read_until(sock, pred, cap, slice_s=0.25):
     return frames, closed, pongs, pred(frames)
 
 
-async def login_and_allocate(email, password, device_id, session):
+async def login_only(email, password, device_id, session):
+    """Login saja (auth/sessions + users/sessions). Kembalikan user_jwt
+    atau None bila gagal."""
     device_info = OrderedDict([
         ("userAgent", ""), ("platform", "DESKTOP"), ("system", "WindowsPlayer"),
         ("systemVersion", "Windows 10  (10.0.19045) 64bit"),
@@ -482,7 +484,7 @@ async def login_and_allocate(email, password, device_id, session):
     r1 = await session.post(ACCOUNT_URL + "/v1/auth/sessions", data=b_p1, headers=h1, timeout=20)
     if r1.status_code != 200:
         qlog(f"[-] auth/sessions gagal: {r1.status_code}")
-        return None, None
+        return None
     auth_token = r1.json().get("authToken")
     await asyncio.sleep(random.uniform(0.1, 0.3))
     p2 = OrderedDict([("authToken", auth_token), ("deviceInfo", device_info)])
@@ -494,8 +496,14 @@ async def login_and_allocate(email, password, device_id, session):
     user_jwt = r2.json().get("userToken")
     if not user_jwt:
         qlog("[-] users/sessions tidak mengembalikan userToken")
-        return None, None
+        return None
     qlog("[+] Login OK, JWT didapat.")
+    return user_jwt
+
+
+async def allocate(user_jwt, session):
+    """Minta alokasi game server saja (tanpa login ulang). Kembalikan body
+    allocation (dict) atau {} bila gagal."""
     await asyncio.sleep(random.uniform(0.1, 0.3))
     p3 = {"userToken": user_jwt, "gameServerProtocolVersion": GAME_PROTOCOL, "isPrivate": False}
     b_p3 = json.dumps(p3, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -503,40 +511,77 @@ async def login_and_allocate(email, password, device_id, session):
                             headers=HEADERS_BASE.copy(), timeout=20)
     qlog(f"[*] allocation status: {r3.status_code}")
     try:
-        body = r3.json()
+        return r3.json()
     except Exception:
-        body = {}
+        return {}
+
+
+async def login_and_allocate(email, password, device_id, session):
+    """Login + 1x alokasi (kompatibel: dipakai semua probe)."""
+    user_jwt = await login_only(email, password, device_id, session)
+    if not user_jwt:
+        return None, None
+    body = await allocate(user_jwt, session)
     return user_jwt, body
 
 
 def find_host_port(body):
+    """Cari host/port game server di allocation (rekursif). Toleran:
+    port boleh int atau string angka, host boleh gabungan 'host:port'
+    dalam satu string, dan body boleh list di level atas. (v10 2026-11-18:
+    alokasi akun clayhackerteam404 kembalikan 200 tanpa host/port yang
+    dikenali — kemungkinan key baru / port string / bentuk gabungan.)"""
     host = port = None
 
     def ok_host(v):
         return isinstance(v, str) and v and "::" not in v and " " not in v
 
+    def as_port(v):
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, int) and 0 < v < 65536:
+            return v
+        if isinstance(v, str) and v.isdigit() and 0 < int(v) < 65536:
+            return int(v)
+        return None
+
     def scan(d):
         nonlocal host, port
+        if isinstance(d, list):
+            for item in d:
+                scan(item)
+            return
         if not isinstance(d, dict):
             return
         for k, v in d.items():
             lk = k.lower()
             if host is None and lk in ("gameserveraddress", "address",
-                                       "host", "hostname", "ip") and ok_host(v):
-                host = v
+                                       "host", "hostname", "ip",
+                                       "endpoint", "server", "serveraddress",
+                                       "gameaddress") and ok_host(v):
+                # Bentuk gabungan 'host:port' dalam satu string.
+                if ":" in v and v.rsplit(":", 1)[1].isdigit():
+                    host, port = v.rsplit(":", 1)[0], int(v.rsplit(":", 1)[1])
+                else:
+                    host = v
             if port is None and lk in ("gameserverport", "port",
-                                       "tcpport") and isinstance(v, int):
-                port = v
+                                       "tcpport"):
+                port = as_port(v)
         for v in d.values():
-            if isinstance(v, dict):
+            if isinstance(v, (dict, list)):
                 scan(v)
-            elif isinstance(v, list):
-                for item in v:
-                    if isinstance(item, dict):
-                        scan(item)
 
     scan(body)
     return host, port
+
+
+def alloc_summary(body, max_keys=20):
+    """Ringkasan struktur allocation untuk diagnosis (tanpa nilai sensitif):
+    daftar key level atas + tipe nilainya. Dipakai saat host/port tak ketemu."""
+    if isinstance(body, dict):
+        keys = [(str(k), type(v).__name__) for k, v in list(body.items())[:max_keys]]
+        return {"top_keys": keys, "total_keys": len(body)}
+    return {"type": type(body).__name__, "len": len(body) if hasattr(body, "__len__") else None}
 
 
 def resolve_name(argv):
