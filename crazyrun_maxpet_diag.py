@@ -537,6 +537,48 @@ async def main():
                 state["stageups"] += 1
             return ok
 
+        def aktifkan_pet():
+            """Activate pet (EventId=4) — WAJIB sebelum run pertama.
+
+            BUG 2026-11-19 (run 44470482774, pet type 2 98befe5e):
+            build_pet_activate() ADA tapi tidak pernah dipanggil — run
+            terhitung (RunCount 20->22) tapi XP +0, lalu stall 2x.
+            FalconNeon lolos di loop 11:06 karena sudah diaktifkan tes
+            petxp 10:41 (ActivePet tersimpan di server antar-sesi).
+            Sukses = respons 'pet' f1=12 ActivatePetResponse, f2=1
+            (terbukti run 44453020630: payload 08 0c 10 01)."""
+            print(f"[*] kirim ActivatePet {pet_id} via RoomEvent 'pet' ...")
+            try:
+                sock.sendall(L.build_room_event_varint(
+                    PET_CMD, build_pet_activate(pet_id)))
+            except Exception as exc:
+                print(f"[!] kirim ActivatePet gagal: {exc}")
+                return False
+            frames = fr.drain(3 if args.fast else 5)
+            ok = False
+            for f in frames:
+                name, data = decode_room_event(f)
+                if name in ("pet", "pets") and data:
+                    d = dict((fn, v) for fn, _w, v
+                             in parse_protobuf_fields(data))
+                    if d.get(1) == 12 and d.get(2) == 1:
+                        ok = True
+                    print(f"[+] respons 'pet' Activate ({len(data)} B): "
+                          f"{data.hex()[:120]}")
+            print(f"[+] ActivatePet: "
+                  f"{'OK' if ok else 'TIDAK ADA RESPONS SUKSES'}")
+            return ok
+
+        # --- aktivasi pet (WAJIB, sebelum run pertama) ---
+        aktif_ok = aktifkan_pet()
+        if not aktif_ok:
+            print("[*] Aktivasi belum sukses — coba sekali lagi.")
+            time.sleep(2 if args.fast else 5)
+            aktif_ok = aktifkan_pet()
+        if not aktif_ok:
+            state["stop_reason"] = ("AKTIVASI PET GAGAL — pet tidak aktif, "
+                                    "run tidak akan beri XP")
+
         # --- ukur awal ---
         baca_xp_pet()
         if not args.fast:
@@ -552,7 +594,7 @@ async def main():
               f"energi={state['energy']} RunCount={state['run_count']}")
 
         # --- loop ---
-        while state["runs_done"] < args.max_runs:
+        while state["runs_done"] < args.max_runs and aktif_ok:
             if (state["xp"] is not None and state["xp"] >= args.target_xp
                     and state["stage"] == 4):
                 state["stop_reason"] = "MAX TERCAPAI (xp>=320, stage 4)"
