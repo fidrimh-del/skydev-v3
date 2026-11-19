@@ -192,7 +192,9 @@ def _parse_petdata(data):
         elif f3 == 12 and w3 == 0:
             pet["type"] = v3
         elif f3 == 13 and w3 == 0:
-            pet["xp"] = v3
+            # f13 bisa negatif (pet spesial/Shiny: 2^64-110 = -110) —
+            # varint di atas 2^63-1 dibaca sebagai signed int64.
+            pet["xp"] = v3 - (1 << 64) if v3 >= (1 << 63) else v3
     return pet
 
 
